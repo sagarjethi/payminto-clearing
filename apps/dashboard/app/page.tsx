@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Ban, FileSignature, Layers, Radio, Waypoints } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -37,11 +37,13 @@ export default function OverviewPage() {
         title="Overview"
         description="Agents pay per call with signed vouchers. This node checks every one against its mandate, then clears them in netted on-chain batches."
         actions={
-          <Button asChild>
-            <Link href="/netting">
-              <Waypoints /> Review netting
-            </Link>
-          </Button>
+          firstRun ? undefined : (
+            <Button asChild>
+              <Link href="/netting">
+                <Waypoints /> Review netting
+              </Link>
+            </Button>
+          )
         }
       />
       {overview.isPending ? (
@@ -197,7 +199,7 @@ function CallsChart() {
                   );
                 }}
               />
-              <Bar dataKey="calls" fill="var(--primary)" radius={[4, 4, 0, 0]} maxBarSize={28} />
+              <Bar dataKey="calls" fill="var(--primary)" radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -220,6 +222,10 @@ function LiveStream() {
     return all.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 14);
   }, [calls.data, denials.data]);
   const name = (a: string | null | undefined) => (a ? dir.lookup(a)?.name ?? `${a.slice(0, 8)}…` : "Unknown");
+  const fresh = useFreshIds(
+    rows.map((r) => (r.kind === "call" ? r.call.id : r.denial.id)),
+    Boolean(calls.data && denials.data),
+  );
 
   return (
     <Panel
@@ -244,7 +250,7 @@ function LiveStream() {
         <ul className="divide-y">
           {rows.map((r) =>
             r.kind === "call" ? (
-              <li key={r.call.id} className="row-in flex items-center gap-3 px-4 py-2.5 text-sm sm:px-5">
+              <li key={r.call.id} className={cn(fresh.has(r.call.id) && "row-in", "flex items-center gap-3 px-4 py-2.5 text-sm sm:px-5")}>
                 <span className="size-1.5 shrink-0 rounded-full bg-positive" aria-hidden />
                 <span className="min-w-0 flex-1 truncate">
                   <span className="font-medium">{name(r.call.agent)}</span>
@@ -259,7 +265,7 @@ function LiveStream() {
                 </time>
               </li>
             ) : (
-              <li key={r.denial.id} className="row-in flex items-center gap-3 bg-negative-soft/50 px-4 py-2.5 text-sm sm:px-5">
+              <li key={r.denial.id} className={cn(fresh.has(r.denial.id) && "row-in", "flex items-center gap-3 bg-negative-soft/50 px-4 py-2.5 text-sm sm:px-5")}>
                 <Ban className="size-3.5 shrink-0 text-negative" aria-label="Denied" />
                 <span className="min-w-0 flex-1 truncate">
                   <span className="font-medium">{name(r.denial.agent)}</span>
@@ -375,3 +381,13 @@ function TimelineItem({ batch, last }: { batch: Batch; last: boolean }) {
   );
 }
 
+
+/** Ids that arrived after the stream first rendered, so only genuinely new rows get the arrival highlight. */
+function useFreshIds(ids: string[], ready: boolean): Set<string> {
+  const [initial, setInitial] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- snapshot of the rows already on screen at first paint
+    if (ready && !initial) setInitial(new Set(ids));
+  }, [ready, initial, ids]);
+  return useMemo(() => (initial ? new Set(ids.filter((id) => !initial.has(id))) : new Set<string>()), [initial, ids]);
+}

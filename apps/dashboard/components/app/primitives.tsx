@@ -205,7 +205,7 @@ export function Panel({
   return (
     <section className={cn("min-w-0 rounded-xl border bg-card text-card-foreground", className)}>
       {(title || actions) && (
-        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b px-4 py-3.5 sm:px-5">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-4 py-3.5 sm:px-5">
           <div className="min-w-0">
             {title && <h2 className="text-[0.9375rem] font-semibold">{title}</h2>}
             {description && <p className="mt-0.5 text-[0.8125rem] text-muted-foreground">{description}</p>}

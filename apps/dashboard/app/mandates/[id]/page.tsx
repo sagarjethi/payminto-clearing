@@ -292,7 +292,7 @@ function SpendChart({ m }: { m: MandateDetail }) {
                   );
                 }}
               />
-              <Area type="monotone" dataKey="value" stroke="var(--primary)" strokeWidth={2} fill="url(#spendFill)" />
+              <Area type="monotone" dataKey="value" stroke="var(--primary)" strokeWidth={2} fill="url(#spendFill)" isAnimationActive={false} />
             </AreaChart>
           </ResponsiveContainer>
         </div>

@@ -44,6 +44,7 @@ import type {
 } from "../schemas";
 
 const CHAIN_ID = 133;
+const EMPTY = process.env.NEXT_PUBLIC_MOCK === "empty";
 const EXPLORER = "https://testnet-explorer.hsk.xyz";
 const USDC = 1_000_000n;
 
@@ -115,10 +116,12 @@ const providers: Provider[] = [
     calls24h: 0,
   },
 ];
+if (EMPTY) providers.length = 0;
 const priceOf = (payee: string) => BigInt(providers.find((p) => p.payee === payee)?.priceAtomic ?? "0");
 const providerIdOf = (payee: string) => providers.find((p) => p.payee === payee)?.id ?? null;
 
-const now = Date.now();
+// Anchored to the hour so ids (batch ids, call ids) are stable across reloads and deep links keep working.
+const now = Math.floor(Date.now() / 3_600_000) * 3_600_000;
 const iso = (ms: number) => new Date(ms).toISOString();
 const sec = (ms: number) => BigInt(Math.floor(ms / 1000));
 
@@ -204,6 +207,8 @@ const mandates: MockMandate[] = [
     status: "revoked",
   }),
 ];
+
+if (EMPTY) mandates.length = 0;
 
 // ---------------------------------------------------------------------------
 // Calls, denials, batches
@@ -405,19 +410,22 @@ function generateCalls(count: number, startMs: number, endMs: number) {
   }
 }
 
-// History: batch 1 about 5 hours ago, batch 2 about 2 hours ago, then calls waiting to be netted.
-generateCalls(214, now - 9 * 3_600_000, now - 5 * 3_600_000);
-deny("PAYEE_NOT_ALLOWED", now - 6.2 * 3_600_000, { mandateId: mandates[0]!.id, agent: TREASURY_AGENT, payee: UNLISTED, amount: "250000", message: `${DENIAL_RULES.PAYEE_NOT_ALLOWED}. A tool result asked the agent to pay ${UNLISTED.slice(0, 10)}…` });
-settlePending(now - 5 * 3_600_000);
-generateCalls(178, now - 5 * 3_600_000 + 60_000, now - 2 * 3_600_000);
-deny("PER_CALL_CAP", now - 3.1 * 3_600_000, { mandateId: mandates[1]!.id, agent: TRADING_AGENT, payee: RISK_SCAN, providerId: "prv_risk_scan", amount: "500000", message: `${DENIAL_RULES.PER_CALL_CAP}: 0.50 USDC asked, cap is 0.02 USDC` });
-deny("STALE_CUMULATIVE", now - 2.8 * 3_600_000, { mandateId: mandates[1]!.id, agent: TRADING_AGENT, payee: MARKET_DATA, providerId: "prv_market_data", amount: "2000" });
-settlePending(now - 2 * 3_600_000, (i) => (i === 1 ? "UNSIGNED" : i === 0 ? "SETTLED" : "ACCEPT"));
-generateCalls(138, now - 2 * 3_600_000 + 60_000, now - 90_000);
-deny("PAYEE_NOT_ALLOWED", now - 50 * 60_000, { mandateId: mandates[0]!.id, agent: TREASURY_AGENT, payee: UNLISTED, amount: "1000000", message: `${DENIAL_RULES.PAYEE_NOT_ALLOWED}. A scraped page asked the agent to pay ${UNLISTED.slice(0, 10)}…` });
-deny("PER_CALL_CAP", now - 34 * 60_000, { mandateId: mandates[2]!.id, agent: RESEARCH_WRITER, payee: RISK_SCAN, providerId: "prv_risk_scan", amount: "40000", message: `${DENIAL_RULES.PER_CALL_CAP}: 0.04 USDC asked, cap is 0.02 USDC` });
-deny("RATE_LIMIT", now - 21 * 60_000, { mandateId: mandates[1]!.id, agent: TRADING_AGENT, payee: MARKET_DATA, providerId: "prv_market_data", amount: "2000" });
-deny("MANDATE_REVOKED", now - 12 * 60_000, { mandateId: mandates[3]!.id, agent: TRADING_AGENT, payee: MARKET_DATA, providerId: "prv_market_data", amount: "2000" });
+// NEXT_PUBLIC_MOCK=empty starts from a fresh node, which shows the first-run guide.
+if (!EMPTY) {
+  // History: batch 1 about 5 hours ago, batch 2 about 2 hours ago, then calls waiting to be netted.
+  generateCalls(214, now - 9 * 3_600_000, now - 5 * 3_600_000);
+  deny("PAYEE_NOT_ALLOWED", now - 6.2 * 3_600_000, { mandateId: mandates[0]!.id, agent: TREASURY_AGENT, payee: UNLISTED, amount: "250000", message: `${DENIAL_RULES.PAYEE_NOT_ALLOWED}. A tool result asked the agent to pay ${UNLISTED.slice(0, 10)}…` });
+  settlePending(now - 5 * 3_600_000);
+  generateCalls(178, now - 5 * 3_600_000 + 60_000, now - 2 * 3_600_000);
+  deny("PER_CALL_CAP", now - 3.1 * 3_600_000, { mandateId: mandates[1]!.id, agent: TRADING_AGENT, payee: RISK_SCAN, providerId: "prv_risk_scan", amount: "500000", message: `${DENIAL_RULES.PER_CALL_CAP}: 0.50 USDC asked, cap is 0.02 USDC` });
+  deny("STALE_CUMULATIVE", now - 2.8 * 3_600_000, { mandateId: mandates[1]!.id, agent: TRADING_AGENT, payee: MARKET_DATA, providerId: "prv_market_data", amount: "2000" });
+  settlePending(now - 2 * 3_600_000, (i) => (i === 1 ? "UNSIGNED" : i === 0 ? "SETTLED" : "ACCEPT"));
+  generateCalls(138, now - 2 * 3_600_000 + 60_000, now - 90_000);
+  deny("PAYEE_NOT_ALLOWED", now - 50 * 60_000, { mandateId: mandates[0]!.id, agent: TREASURY_AGENT, payee: UNLISTED, amount: "1000000", message: `${DENIAL_RULES.PAYEE_NOT_ALLOWED}. A scraped page asked the agent to pay ${UNLISTED.slice(0, 10)}…` });
+  deny("PER_CALL_CAP", now - 34 * 60_000, { mandateId: mandates[2]!.id, agent: RESEARCH_WRITER, payee: RISK_SCAN, providerId: "prv_risk_scan", amount: "40000", message: `${DENIAL_RULES.PER_CALL_CAP}: 0.04 USDC asked, cap is 0.02 USDC` });
+  deny("RATE_LIMIT", now - 21 * 60_000, { mandateId: mandates[1]!.id, agent: TRADING_AGENT, payee: MARKET_DATA, providerId: "prv_market_data", amount: "2000" });
+  deny("MANDATE_REVOKED", now - 12 * 60_000, { mandateId: mandates[3]!.id, agent: TRADING_AGENT, payee: MARKET_DATA, providerId: "prv_market_data", amount: "2000" });
+}
 
 // ---------------------------------------------------------------------------
 // Derived views
@@ -500,7 +508,7 @@ function tick() {
 }
 
 function startTraffic() {
-  if (ticker || typeof window === "undefined") return;
+  if (EMPTY || ticker || typeof window === "undefined") return;
   ticker = setInterval(tick, 2600);
 }
 
