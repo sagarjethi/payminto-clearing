@@ -1,0 +1,98 @@
+"use client";
+
+import { useState, type FormEvent } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { Search, ShieldCheck } from "lucide-react";
+import { useCalls, useDirectory } from "@/lib/queries";
+import { timeAgo } from "@/lib/format";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Money, PageHeader, Panel } from "@/components/app/primitives";
+import { EmptyState, ErrorState, RowsSkeleton } from "@/components/app/states";
+
+export default function ReceiptsPage() {
+  const router = useRouter();
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const calls = useCalls({ status: "settled", limit: 10 });
+  const dir = useDirectory();
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    const v = value.trim();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(v)) {
+      setError("A call id is 0x followed by 64 hex characters. It is in the PAYMENT-RESPONSE receipt the provider returned.");
+      return;
+    }
+    router.push(`/receipts/${v}`);
+  }
+
+  return (
+    <>
+      <PageHeader
+        title="Receipt proof"
+        description="Any single call can be proven against the receipts root its batch stored on chain. Paste a call id, or pick a recent settled call."
+      />
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+        <Panel title="Look up a call" className="h-fit">
+          <form onSubmit={submit} noValidate className="space-y-3">
+            <Label htmlFor="callId">Call id</Label>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                id="callId"
+                value={value}
+                onChange={(e) => {
+                  setValue(e.target.value);
+                  setError(null);
+                }}
+                placeholder="0x..."
+                className="hash flex-1"
+                spellCheck={false}
+                aria-invalid={Boolean(error)}
+                aria-describedby={error ? "callId-error" : undefined}
+              />
+              <Button type="submit">
+                <Search /> Prove
+              </Button>
+            </div>
+            {error && (
+              <p id="callId-error" className="text-sm text-negative">
+                {error}
+              </p>
+            )}
+          </form>
+        </Panel>
+        <Panel title="Recent settled calls" bodyClassName="p-0 sm:p-0">
+          {calls.isPending ? (
+            <RowsSkeleton className="px-5" rows={5} />
+          ) : calls.isError ? (
+            <ErrorState className="m-4" error={calls.error} onRetry={() => void calls.refetch()} />
+          ) : calls.data.items.length === 0 ? (
+            <EmptyState icon={<ShieldCheck className="size-4" />} title="No settled calls yet">
+              A call becomes provable once the batch that cleared it is confirmed on chain.
+            </EmptyState>
+          ) : (
+            <ul className="divide-y">
+              {calls.data.items.map((c) => (
+                <li key={c.id}>
+                  <Link href={`/receipts/${c.id}`} className="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-muted/40 sm:px-5">
+                    <span className="hash w-28 shrink-0 text-xs text-muted-foreground">
+                      {c.id.slice(0, 8)}…{c.id.slice(-4)}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {dir.lookup(c.agent)?.name ?? "Agent"} <span className="text-subtle">paid</span> {dir.lookup(c.payee)?.name ?? "payee"}
+                    </span>
+                    <Money atomic={c.amount} />
+                    <span className="num hidden w-16 text-right text-xs text-subtle sm:block">{timeAgo(c.createdAt)}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </div>
+    </>
+  );
+}
