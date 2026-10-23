@@ -142,6 +142,13 @@ contract ClearingHubTest is Test {
         hub.openMandate(old, "");
     }
 
+    function test_openMandate_rejectsUnsettleableExpiry() public {
+        ClearingHub.Mandate memory m = _mandate(agentA, 100e6, bytes32(0));
+        m.validUntil = type(uint64).max;
+        vm.expectRevert(ClearingHub.InvalidMandate.selector);
+        hub.openMandate(m, "");
+    }
+
     function test_openMandate_supportsSmartWalletOwner() public {
         MockSmartWallet safe = new MockSmartWallet(owner);
         ClearingHub.Mandate memory m = _mandate(agentA, 100e6, bytes32(0));

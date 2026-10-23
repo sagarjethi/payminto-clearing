@@ -1,0 +1,237 @@
+# Payminto Clearing - build spec
+
+Payminto Clearing is a self-hosted clearinghouse for agent-to-agent payments on HashKey Chain.
+It is the shared contract between everyone building this repo.
+If something here is wrong, fix it here first, then in code.
+
+## 1. The product in one paragraph
+
+An owner (a person, a company treasury, or a Safe) signs one Mandate that gives an AI agent a bounded budget: total cap, per-call cap, daily cap, rate limit, allowed payees and an expiry.
+The agent then pays any API, MCP tool or other agent per call with a gas-free signed cumulative Voucher, carried over the x402 v2 HTTP flow.
+The provider's self-hosted Clearing Node checks every voucher against the mandate atomically, records it in a double-entry ledger, and returns a signed receipt.
+Periodically, or on demand, the node clears hundreds of vouchers in one `settleBatch` transaction on the ClearingHub contract.
+The hub verifies every signature and cap on chain, nets all obligations between all agents, and moves only the net amounts directly wallet to wallet.
+Every net transfer is wrapped as an HSP payment whose `settlementBinding` is the batch id, and every individual call is provable against the batch Merkle root stored on chain.
+Nobody, including the node operator, ever holds user funds.
+
+## 2. Repository layout
+
+| Path | Owner role | What |
+|---|---|---|
+| `contracts/` | Principal engineer | `ClearingHub.sol`, `MockStablecoin.sol` (local only), Foundry tests and deploy scripts. Done. |
+| `packages/protocol/` | Principal engineer | Shared TS: ABI, chains, EIP-712 types, Merkle trees, policy, HSP wire v1, x402 headers, money. Done. |
+| `packages/sdk/` | Backend engineer | `@payminto/sdk`: agent client, provider paywall, owner helpers. |
+| `apps/node/` | Backend engineer | Clearing Node: HTTP API, SQLite store, policy engine, settlement worker, HSP adapter, SSE. |
+| `apps/dashboard/` | Frontend engineer + UI/UX | Next.js operator console. |
+| `apps/mcp/` | Agent engineer | MCP server that gives any MCP-capable agent a budgeted wallet. |
+| `apps/demo/` | Agent engineer | Three paid provider services, three agents, and the scripted judge demo. |
+| `docs/` | Marketing + hackathon strategist | Pitch, submission text, demo script, architecture. |
+
+Runtime: Node 22.13 or newer (we develop on Node 26), pnpm 9, Foundry 1.5.
+TypeScript runs directly through Node type stripping where possible (`node src/index.ts`), so only erasable syntax is allowed: no `enum`, no parameter properties, no namespaces.
+Import local files with the `.ts` extension.
+Shared code is imported as `@payminto/protocol` (workspace dependency `"@payminto/protocol": "workspace:*"`).
+
+## 3. Contract facts (already implemented and tested)
+
+`ClearingHub` EIP-712 domain: name `Payminto Clearing`, version `1`, chainId, verifyingContract = hub.
+
+- `openMandate(Mandate m, bytes ownerSig) -> bytes32 mandateId` - anyone may submit; owner may be an EOA or ERC-1271 wallet.
+- `revokeMandate(bytes32 id)` - owner or agent; vouchers stay settleable for `REVOKE_GRACE` (1 hour).
+- `settleBatch(bytes32 batchId, bytes32 receiptsRoot, address token, Claim[] claims) -> uint256 transfers` - permissionless; at most 64 claims; one token per batch.
+- `verifyReceipt(bytes32 batchId, bytes32 leaf, bytes32[] proof) -> bool`.
+- Views: `mandates(id)`, `settled(id, payee)`, `batches(batchId)`, `mandateDigest`, `voucherDigest`, `settleDeadline`.
+- Events: `MandateOpened`, `MandateRevoked`, `VoucherSettled(batchId, mandateId, payee, delta)`, `NetTransfer(batchId, from, to, amount)`, `BatchSettled(batchId, receiptsRoot, token, claims, gross, net, transfers)`.
+- A Claim carries only the latest cumulative voucher per (mandate, payee); the hub pays `cumulative - settled[mandate][payee]`.
+- Net transfers are `transferFrom(debtor, creditor)` so agents must `approve(hub, ...)` the token once.
+
+All TS helpers for these live in `packages/protocol/src` and are tested against a live anvil deployment.
+Use them; do not re-derive EIP-712 types or Merkle encodings anywhere else.
+
+## 4. Networks
+
+| Network | chainId | RPC | Token |
+|---|---|---|---|
+| HashKey Chain mainnet | 177 | https://mainnet.hsk.xyz | USDC.e `0x054ed45810DbBAb8B27668922D110669c9D88D0a` (6 dp) |
+| HashKey Chain testnet | 133 | https://testnet.hsk.xyz | USDC `0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6` (6 dp) |
+| Local anvil | 31337 | http://127.0.0.1:8545 | `MockStablecoin`, address in `contracts/deployments/31337.json` |
+
+`contracts/deployments/<chainId>.json` holds `{ clearingHub, token?, chainId, blockNumber }` after a deploy.
+Local dev: `anvil` then `forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcast --private-key <anvil key 0>`.
+
+## 5. Clearing Node (`apps/node`)
+
+### 5.1 Configuration (environment)
+
+| Var | Default | Meaning |
+|---|---|---|
+| `PORT` | `8787` | HTTP port |
+| `CHAIN_ID` | `31337` | 31337, 133 or 177 |
+| `RPC_URL` | network default | JSON-RPC |
+| `HUB_ADDRESS` | from deployments file | ClearingHub |
+| `TOKEN_ADDRESS` | network default or deployments file | settlement token |
+| `OPERATOR_KEY` | required | node key: signs receipts, submits settlement txs (pays gas only) |
+| `ADMIN_TOKEN` | required | bearer token for operator endpoints and the dashboard |
+| `DB_PATH` | `./data/clearing.db` | SQLite file |
+| `SETTLE_INTERVAL_SEC` | `0` (manual) | auto-settle period |
+| `SETTLE_MIN_CALLS` | `1` | skip auto-settle below this many unsettled calls |
+| `PUBLIC_URL` | `http://localhost:8787` | advertised in x402 requirements |
+| `HSP_MODE` | `local` | `local` (built-in HSP adapter + verifier) or `coordinator` |
+| `HSP_COORDINATOR_URL`, `HSP_API_KEY`, `HSP_CHAIN_NAME`, `HSP_VERIFYING_CONTRACT` | unset | needed for `coordinator` mode; `HSP_VERIFYING_CONTRACT` defaults to the hub in `local` mode |
+| `HSP_COSIGN_TIMEOUT_SEC` | `20` | how long a batch waits for debtor agents to co-sign HSP mandates |
+
+Config is parsed and validated once at startup (zod), with clear errors, and never logged with secrets.
+
+### 5.2 Storage
+
+SQLite via `node:sqlite` (`DatabaseSync`), WAL mode, `PRAGMA foreign_keys=ON`, forward-only numbered SQL migrations in `apps/node/migrations/`.
+Amounts are stored as decimal TEXT of atomic units and handled as `bigint` in code; never floats.
+Every voucher acceptance runs in one `BEGIN IMMEDIATE` transaction so parallel calls cannot overspend.
+
+Data safety (non-negotiable):
+- Tests use a fresh temp-file database per test file (`mkdtemp`), never `DB_PATH`.
+- Any reset or seed tool must refuse to run unless the target path ends in `.test.db` / `.demo.db`, or lives in the OS temp dir, or `--i-know-this-is-disposable` is passed. Put this guard in code.
+
+Tables (suggested; refine as needed): `mandates`, `providers`, `calls`, `denials`, `batches`, `batch_claims`, `net_transfers`, `hsp_payments`, `ledger_entries`, `events`.
+
+### 5.3 Lifecycle
+
+1. Owner creates a mandate (SDK `OwnerClient` or dashboard) and posts it: `POST /v1/mandates` with `{ mandate: MandateJson, ownerSignature, policy, payees: Address[], label }`.
+   The node checks `mandateId`, signature (EOA via `isMandateSignedBy`; for contract owners accept if `openMandate` succeeds), `policyHash(policy) == mandate.policyHash`, `payeesRoot(payees) == mandate.payeesRoot`.
+   The node submits `openMandate` on chain itself (gas paid by operator) unless already open, then status becomes `open`.
+2. Agent wallet must hold the token and `approve(hub, cap)`; the node tracks balance and allowance (refreshed on demand and every 30 s while there are unsettled calls).
+3. Provider registers: `POST /v1/providers` (admin) with `{ name, description, payee, priceAtomic, resource, category }` -> `{ id, apiKey }`.
+   The API key is shown once and stored hashed (sha256).
+4. Call: agent hits provider -> 402 with requirements -> agent signs voucher with `cumulative = position + price` -> provider middleware calls `POST /v1/vouchers` (provider key) -> node validates and returns a `ClearingReceipt` or a denial -> provider serves or refuses.
+5. Settle: `POST /v1/settlements` (admin) or the interval worker.
+   The node takes all `accepted` calls for the token, the latest voucher per (mandate, payee), builds the receipts tree over every call, and picks `batchId = keccak256(abi.encode(chainId, hub, receiptsRoot, batchSeq))`.
+   It computes net positions off chain, pre-checks each debtor's balance and allowance, and drops mandates that cannot pay (those calls stay `accepted` and a denial-style warning event is emitted).
+   It splits into chunks of at most 64 claims.
+   HSP co-sign phase: for each projected net transfer it creates an HSP mandate (`buildNetTransferMandate`) and waits up to `HSP_COSIGN_TIMEOUT_SEC` for the debtor agent to co-sign (see 5.5).
+   It simulates then sends `settleBatch`, waits for the receipt, decodes `NetTransfer` events, and compares them with the projection.
+   It marks calls `settled`, writes ledger entries, then runs the HSP step for each net transfer.
+6. Revoke: `POST /v1/mandates/:id/revoke` (admin, or agent-signed) stops new vouchers immediately and submits `revokeMandate` when the operator is the owner's delegate; otherwise the dashboard shows the owner the call to make.
+
+### 5.4 Voucher validation order (each failure -> a recorded denial with a `DenialRule`)
+
+UNKNOWN_MANDATE, MANDATE_REVOKED, MANDATE_NOT_ACTIVE, TOKEN_MISMATCH, PAYEE_NOT_ALLOWED, PRICE_MISMATCH, PER_CALL_CAP, BAD_SIGNATURE, STALE_CUMULATIVE, RATE_LIMIT, DAILY_CAP, TOTAL_CAP, INSUFFICIENT_FUNDS.
+STALE_CUMULATIVE responses include the current position so the SDK can re-sign and retry.
+TOTAL_CAP counts settled plus accepted-unsettled spend.
+INSUFFICIENT_FUNDS compares the agent's outstanding unsettled total plus this call with min(balance, allowance).
+
+### 5.5 HSP integration
+
+Every net transfer of a batch becomes one HSP payment.
+- The HSP mandate (wire v1) is built with `buildNetTransferMandate({ payer: debtor, recipient: creditor, token, amount, chainId, batchId, deadline })`, so `settlementBinding = batchId`.
+- Debtor agents co-sign: the SDK `AgentClient` polls `GET /v1/agents/:address/cosign` (or receives it in the voucher response as `pendingCosign`) and posts `POST /v1/cosign/:hspPaymentId` with `{ signerProof }`.
+  The node verifies with `isHspMandateSignedBy`.
+  If a debtor does not co-sign in time, the batch still settles on the strength of its vouchers, and that transfer's HSP record is `UNSIGNED` (shown clearly, never hidden).
+- `HSP_MODE=local`: after the tx confirms, the node acts as the HSP adapter: it checks the `NetTransfer` log matches (payer, recipient, token, amount, batchId), signs a Receipt with the operator key over `{ paymentId, txHash, logIndex, satisfiedCapabilities }`, and runs `hspVerify(required, satisfied)` with satisfied = `proves:settlement-verified:v1`, `proves:payminto-mandate-bound:v1`, `proves:payminto-netting-batch:v1`. Status `ACCEPT` or `REJECT`.
+- `HSP_MODE=coordinator`: `POST {coordinator}/payments` with `{ chain, mandate: { body: wire, signerProof, requiredCapabilities: [] }, attestations: [] }`, then `POST /payments/:id/observe` with `{ txHash }` retrying with backoff on 202, then `GET /payments/:id` until `SETTLED`. Bearer `HSP_API_KEY`. Failures are recorded, retried by a worker, and never block the clearing ledger.
+- Implement both behind one `HspPort` interface so swapping in the official `@hsp/sdk` later is mechanical.
+
+### 5.6 HTTP API
+
+All JSON. Amounts are decimal strings of atomic units. Addresses are checksummed. Errors are `{ error: { code, message, details? } }` with proper status codes.
+Auth: `Authorization: Bearer <ADMIN_TOKEN>` for admin routes, `Authorization: Bearer <provider apiKey>` for provider routes. Public routes need none. CORS allows the dashboard origin.
+
+Public:
+- `GET /healthz` -> `{ ok, chainId, hub, token, operator, blockNumber, hspMode }`
+- `GET /v1/info` -> network, hub, token `{ address, symbol, decimals }`, explorer base, node operator address, version.
+- `GET /v1/providers` -> public catalog `[{ id, name, description, payee, priceAtomic, resource, category, calls24h }]`.
+- `GET /v1/mandates/:id/position?payee=0x..` -> `{ mandateId, payee, cumulative, settled }` (agents use this to sign the next voucher).
+- `GET /v1/receipts/:callId/proof` -> `{ receipt, batchId, receiptsRoot, proof, leaf, txHash, explorerUrl, onchainVerified? }` (`onchainVerified` computed by calling `verifyReceipt`).
+- `GET /v1/agents/:address/cosign` -> pending HSP mandates to sign `[{ hspPaymentId, typedData }]` (typed data JSON-safe: bigints as strings).
+- `POST /v1/cosign/:hspPaymentId` `{ signerProof }`.
+- `GET /v1/events` -> Server-Sent Events stream (see 5.7). `?token=<ADMIN_TOKEN>` accepted because EventSource cannot set headers.
+
+Provider:
+- `POST /v1/vouchers` body `VoucherPayment` (from `x402.ts`) plus `{ providerId, requestHash }` -> `200 { receipt: ClearingReceipt, position }` or `402 { error: { code: <DenialRule>, message, details: { position? } } }`.
+
+Admin:
+- `GET /v1/overview` -> totals: volume settled/pending, calls (24h, all), denials (24h), active mandates, providers, batches, gas saved estimate, compression ratio (calls per on-chain transfer), last batch.
+- `GET /v1/mandates` / `GET /v1/mandates/:id` (with spend: settled, pending, today, remaining, recent calls, denials).
+- `POST /v1/mandates` (see 5.3), `POST /v1/mandates/:id/revoke`.
+- `GET /v1/providers/:id`, `POST /v1/providers`.
+- `GET /v1/calls?mandateId=&payee=&status=&limit=&cursor=`.
+- `GET /v1/denials?limit=`.
+- `GET /v1/batches`, `GET /v1/batches/:id` (claims, net transfers with HSP status, tx hash, explorer link, gross, net, calls).
+- `POST /v1/settlements` -> starts a settlement; returns `{ batchIds }` or `{ skipped: reason }`.
+- `GET /v1/ledger?account=&limit=` and `GET /v1/ledger/trial-balance` (must always balance to zero).
+- `GET /v1/netting/preview` -> what settling now would do: gross obligations graph `[{ from, to, amount, calls }]`, net transfers, compression.
+
+### 5.7 SSE events
+
+`event: <type>` with JSON `data`. Types: `call.accepted`, `call.denied`, `mandate.opened`, `mandate.revoked`, `batch.started`, `batch.submitted`, `batch.confirmed`, `batch.failed`, `hsp.updated`, `funds.warning`.
+Every payload carries `id`, `at` (ISO time) and the relevant entity in its API shape.
+
+### 5.8 Ledger
+
+Double-entry, every journal balances.
+Accounts: `agent:<addr>:payable`, `provider:<addr>:receivable`, `agent:<addr>:wallet`, `provider:<addr>:wallet`.
+Call accepted: debit `provider:<payee>:receivable`, credit `agent:<agent>:payable`.
+Batch settled: for each voucher delta, debit `agent:<agent>:payable`, credit `provider:<payee>:receivable`; for each net transfer, debit `<creditor>:wallet`, credit `<debtor>:wallet`.
+Refunds (if implemented) are a negative call that offsets the next batch.
+
+## 6. SDK (`packages/sdk`, `@payminto/sdk`)
+
+```ts
+// Owner side
+const owner = new OwnerClient({ nodeUrl, chainId, hub, account /* viem Account */, publicClient? });
+const { mandate, mandateId, ownerSignature } = await owner.createMandate({
+  agent, token, totalCap, validForSeconds, payees, policy,
+});
+await owner.submit({ mandate, ownerSignature, policy, payees, label }); // POST /v1/mandates
+
+// Agent side
+const agent = new AgentClient({ nodeUrl?, chainId, hub, account, mandateId, autoCosign: true });
+await agent.ensureAllowance(walletClient, amount); // one-time approve(hub)
+const res = await agent.fetch("https://provider.example/quote?pair=HSK-USDC"); // handles 402 -> voucher -> retry
+agent.on("receipt", r => ...); agent.on("denied", d => ...);
+agent.startCosignLoop(); // signs pending HSP mandates for its own net debits, verifying amounts against its own receipts
+
+// Provider side (framework-agnostic fetch handler wrapper, plus a Hono middleware)
+const pay = paywall({ nodeUrl, providerId, apiKey, price, description });
+app.get("/quote", pay.hono(), handler);            // Hono
+export default { fetch: pay.wrap(handler) };       // any fetch handler
+```
+
+Agent `fetch` behaviour: on 402 with a `payminto-voucher` requirement, read position from the node, sign `cumulative = position + amount`, retry once with `PAYMENT-SIGNATURE`; on `STALE_CUMULATIVE` refresh and retry up to 3 times with jitter; serialize vouchers per (mandate, payee) inside the client to avoid self-races.
+The agent co-sign loop must refuse to sign an HSP mandate whose amount exceeds what its own accepted receipts justify for that batch (defence against a malicious node).
+
+## 7. MCP server (`apps/mcp`)
+
+MCP SDK (latest 1.x), `registerTool` API, stdio transport plus Streamable HTTP on port 3334.
+Tools: `list_paid_services`, `call_paid_service { serviceId | url, method, query, body }`, `get_budget` (caps, spent, remaining, today), `get_receipts { limit }`, `prove_receipt { callId }`.
+Configured with an agent key and mandate id via env; spending goes through `AgentClient`, so every MCP tool call is mandate-bound.
+
+## 8. Demo (`apps/demo`)
+
+Three provider services on ports 4101-4103, each with its own payee wallet and price:
+- `Market Data` (0.002 USDC per quote): HSK and BTC prices; uses a live public price source with a deterministic fallback.
+- `Risk Scan` (0.01 USDC per address): wallet risk score (deterministic heuristic, labelled as such).
+- `Research Writer` (0.05 USDC per brief): itself an agent that buys Market Data and Risk Scan to compose a brief, so it is both payee and payer and netting is visible.
+Agents: `Treasury Agent` (owner-capped) and `Trading Agent`, plus a scripted "prompt injection" step that tries to pay an unlisted payee and a step that exceeds the per-call cap; both must be denied with the rule shown.
+`pnpm demo` runs: start anvil, deploy, start node, start providers, create mandates, run ~500 calls in parallel, settle, print a summary (calls, gross, net, transfers, compression ratio, gas saved, explorer links) and one Merkle proof checked on chain.
+
+## 9. Dashboard (`apps/dashboard`)
+
+Next.js 16 App Router, React 19, Tailwind 4, shadcn/ui, lucide icons, Recharts, TanStack Query, live updates through SSE.
+Pages:
+- **Overview**: KPI row (settled volume, calls today, compression ratio "N calls per on-chain transfer", gas saved, denials today, active mandates), live call stream, settlement timeline.
+- **Mandates**: list with spend bars; detail with policy, on-chain state, spend over time, calls, denials, revoke button. Create-mandate wizard that signs with the connected wallet (EIP-1193) or a dev key in local mode.
+- **Providers**: catalog, register provider (shows API key once), per-provider revenue.
+- **Netting**: the signature view. Left: gross obligations graph between agents and providers. Right: the net transfers the hub will execute. A "Settle now" button, then the animated result with tx link.
+- **Batches**: list and detail with claims, net transfers, HSP status per transfer (ACCEPT, SETTLED, UNSIGNED, REJECT), explorer links.
+- **Receipt proof**: paste or click a call id, see the receipt, Merkle path and the on-chain `verifyReceipt` result.
+- **Ledger**: journal and trial balance (shows it is zero).
+- **Settings**: node info, network, hub, token, HSP mode, operator address and gas balance.
+Design bar: calm, precise, institutional fintech; not a crypto casino look. Light and dark themes. Every number has units. Addresses are truncated with copy and explorer links. Empty, loading and error states are designed, not default.
+
+## 10. Quality bar
+
+- TypeScript strict, no `any` in exported APIs, zod at every trust boundary.
+- Unit tests for the policy engine (every DenialRule), netting projection (matches contract results), ledger balance, HSP adapter, SDK retry logic.
+- One end-to-end test that boots anvil, deploys, runs node + a provider + an agent in-process, makes calls, settles, and verifies balances and a proof on chain.
+- Lint and typecheck clean. No em dash characters anywhere in code, UI copy or docs (use "-").
+- In Markdown, one sentence per line.

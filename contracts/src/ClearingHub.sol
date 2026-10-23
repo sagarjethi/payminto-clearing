@@ -132,6 +132,8 @@ contract ClearingHub is EIP712, ReentrancyGuard {
         if (m.totalCap == 0 || m.validUntil <= m.validAfter || m.validUntil <= block.timestamp) {
             revert InvalidMandate();
         }
+        // Keeps validUntil + EXPIRY_GRACE representable, otherwise settleDeadline would overflow and lock vouchers.
+        if (m.validUntil > type(uint64).max - EXPIRY_GRACE) revert InvalidMandate();
         mandateId = mandateDigest(m);
         if (mandates[mandateId].owner != address(0)) revert MandateExists();
         if (!SignatureChecker.isValidSignatureNow(m.owner, mandateId, ownerSig)) revert BadOwnerSignature();
