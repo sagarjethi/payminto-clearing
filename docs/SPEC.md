@@ -143,7 +143,7 @@ Public:
 - `GET /v1/receipts/:callId/proof` -> `{ receipt, batchId, receiptsRoot, proof, leaf, txHash, explorerUrl, onchainVerified? }` (`onchainVerified` computed by calling `verifyReceipt`).
 - `GET /v1/agents/:address/cosign` -> pending HSP mandates to sign `[{ hspPaymentId, typedData }]` (typed data JSON-safe: bigints as strings).
 - `POST /v1/cosign/:hspPaymentId` `{ signerProof }`.
-- `GET /v1/events` -> Server-Sent Events stream (see 5.7). `?token=<ADMIN_TOKEN>` accepted because EventSource cannot set headers.
+- `GET /v1/events` -> Server-Sent Events stream (see 5.7). Requires the admin token: `Authorization: Bearer` or `?token=<ADMIN_TOKEN>` (EventSource cannot set headers).
 
 Provider:
 - `POST /v1/vouchers` body `VoucherPayment` (from `x402.ts`) plus `{ providerId, requestHash }` -> `200 { receipt: ClearingReceipt, position }` or `402 { error: { code: <DenialRule>, message, details: { position? } } }`.
@@ -172,6 +172,53 @@ Accounts: `agent:<addr>:payable`, `provider:<addr>:receivable`, `agent:<addr>:wa
 Call accepted: debit `provider:<payee>:receivable`, credit `agent:<agent>:payable`.
 Batch settled: for each voucher delta, debit `agent:<agent>:payable`, credit `provider:<payee>:receivable`; for each net transfer, debit `<creditor>:wallet`, credit `<debtor>:wallet`.
 Refunds (if implemented) are a negative call that offsets the next batch.
+
+### 5.9 Response shapes (pinned)
+
+These are the exact JSON shapes `apps/node` serves and `apps/dashboard` parses; change them here first.
+Ids (mandate, call, batch, HSP payment) are lowercase 0x hex; addresses are checksummed; amounts are decimal strings of atomic units; `*At` fields are ISO-8601 UTC; `timestamp` fields are unix seconds.
+List routes return bare arrays, except `GET /v1/calls` which returns `{ items, nextCursor }` (pass `cursor=<nextCursor>` for the next page).
+
+```ts
+Call = { id, seq, mandateId, agent, payee, providerId, amount, cumulative, requestHash, timestamp, createdAt,
+         status: "accepted" | "settling" | "settled", batchId: string | null, leaf }
+Denial = { id, rule: DenialRule, message, mandateId, agent: string | null, payee, providerId, amount, cumulative,
+           requestHash, details: { position?: Position, ...ruleSpecific }, timestamp, createdAt }
+Position = { mandateId, payee, cumulative, settled }
+Mandate = { id, label, status: "pending" | "open" | "revoked" | "expired", mandate: MandateJson, owner, agent, token,
+            totalCap, expiresAt, payees, policy, openTxHash, revokedAt, createdAt, calls: number,
+            spend: { settled, pending, total, today, remaining }, agentBalance: string | null, agentAllowance: string | null }
+MandateDetail = Mandate & { ownerSignature, revokedBy, revokeTxHash, openTxExplorerUrl,
+            onchain: { open: false } | { open: true, spent, totalCap, revokedAt: number | null, validUntil: number } | null,
+            positions: [{ payee, cumulative, settled, pending }], recentCalls: Call[], denials: Denial[],
+            spendSeries: [{ day: "YYYY-MM-DD", amount, calls }] }          // last 14 UTC days
+Provider = { id, name, description, payee, priceAtomic, resource, category, calls24h }
+ProviderDetail = Provider & { createdAt, callsTotal, denials: number, revenue: { settled, pending }, recentCalls: Call[] }
+ProviderCreated = Provider & { createdAt, apiKey }                           // apiKey shown once
+Batch = { id, seq, status: "building" | "cosigning" | "submitted" | "confirmed" | "failed", token, receiptsRoot,
+          claims, calls, transfers, gross, net, projectedGross, projectedNet, compression: number | null,
+          reconciled: boolean | null, txHash, explorerUrl, blockNumber, gasUsed, error, trigger, createdAt, submittedAt, confirmedAt }
+BatchDetail = Batch & { claimList: [{ index, mandateId, agent, payee, cumulative, previous, delta, calls }],
+          netTransfers: [{ index, from, to, amount, logIndex, hsp: Hsp | null }], callList: Call[] }
+Hsp = { paymentId, batchId, transferIndex, payer, recipient, token, amount, deadline,
+        status: "PENDING" | "COSIGNED" | "UNSIGNED" | "SUBMITTED" | "ACCEPT" | "REJECT" | "SETTLED" | "FAILED",
+        cosigned: boolean, reason: string | null, requiredCapabilities, satisfiedCapabilities, receipt, coordinatorId,
+        coordinatorStatus, txHash, logIndex, attempts, createdAt, updatedAt }
+```
+
+- `GET /v1/overview` -> `{ volume: { settled, pending, last24h }, calls: { all, last24h, pending, settled }, denials24h, denialsTotal, activeMandates, mandates, providers, batches, batchesConfirmed, batchesFailed, transfers, gasSaved: { gas, native: string | null, used, naive, perTransferAssumption }, compressionRatio, lastBatch: Batch | null, unsettledCalls, token: { address, symbol, decimals } }`.
+  `compressionRatio` is settled calls per on-chain transfer and is `0` before the first transfer; `gasSaved` is an estimate against one 50k-gas ERC-20 transfer per call.
+- `GET /v1/netting/preview` -> `{ calls, claims, batches, grossTotal, netTotal, gross: [{ from, to, amount, calls }], net: [{ from, to, amount }], transfers, compression, savedTransfers }` (`compression` is `0` when there is nothing to settle).
+- `POST /v1/settlements` -> `{ batchIds, batches: Batch[], dropped: [{ mandateId, payee, reason }] }` or `{ skipped: reason }`; it returns after the batches are confirmed or failed.
+- `GET /v1/receipts/:callId/proof` -> `{ receipt: ClearingReceipt, status, batchId, batchStatus, receiptsRoot, proof, leaf, txHash, explorerUrl, onchainVerified }`; batch fields are `null` and `proof` is `[]` until the call is batched, and `onchainVerified` is `null` until the batch is confirmed.
+- `GET /v1/ledger` -> `[{ id, journalId, kind, ref, account, debit, credit, memo, createdAt }]`; `account` also matches a prefix such as `agent:0x...`.
+- `GET /v1/ledger/trial-balance` -> `{ balanced, totalDebit, totalCredit, balance, journals, accounts: [{ account, debit, credit, balance }] }`, where `balance` is always `"0"`.
+- `GET /v1/agents/:address/cosign` -> `[{ hspPaymentId, batchId, payer, recipient, token, amount, deadline, calls: [{ callId, mandateId, payee, amount, cumulative }], typedData: { domain, types, primaryType: "Mandate", message: HspWireMandate } }]`.
+- `POST /v1/mandates/:id/revoke` -> `{ mandate: Mandate, onchain: { revoked, submitted, txHash, call: { to, functionName, args, data, allowedSenders } | null } }`.
+  Without the admin token the body must be `{ signature }`: an EIP-191 signature by the agent or owner over `Payminto Clearing: revoke mandate <lowercase mandateId>`.
+- SSE: `event: <type>`, `id: <event id>` and `data: { id, at, type, <entity> }` where the entity key is `call` (call.accepted), `denial` (call.denied), `mandate` (mandate.*), `batch` (batch.*, a `Batch`), `hspPayment` (hsp.updated, an `Hsp`) or `warning` (funds.warning: `{ agent?, mandateId?, payee?, reason, required?, outstanding?, balance?, allowance? }`).
+  A `ready` event opens the stream, `: ping` comments keep it alive every 15 s, and `Last-Event-ID` (or `?since=<id>`) replays missed events.
+- Provider-route errors that are not denials: `400 NETWORK_MISMATCH | PAYEE_MISMATCH | REQUEST_HASH_MISMATCH | VALIDATION_ERROR`, `401 UNAUTHORIZED`, `403 PROVIDER_MISMATCH`.
 
 ## 6. SDK (`packages/sdk`, `@payminto/sdk`)
 
