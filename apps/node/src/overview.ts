@@ -2,10 +2,10 @@ import type { Database } from "./db/database.ts";
 import { batchSummaryJson, type BatchRow, type Store } from "./store.ts";
 
 /**
- * Gas a plain per-call ERC-20 transfer would cost (cold recipient slot is ~51k, warm ~34k).
- * Used only for the "gas saved" estimate and labelled as an estimate everywhere it is shown.
+ * Gas of one plain ERC-20 transfer to an existing holder, measured by `pnpm --filter @payminto/node gas`
+ * (docs/GAS.md). The conservative per-call cost of paying one transfer per call, used for "gas saved".
  */
-export const NAIVE_TRANSFER_GAS = 50_000n;
+export const NAIVE_TRANSFER_GAS = 34_444n;
 
 export function overview(db: Database, store: Store, chainId: number, nowSec: number) {
   const day = nowSec - 86_400;

@@ -1,0 +1,84 @@
+{
+  "measuredAt": "2026-10-23T21:48:04.442Z",
+  "environment": "anvil (local), solc 0.8.24 optimizer 200 runs, MockStablecoin (OpenZeppelin ERC-20)",
+  "callsPerClaim": 10,
+  "erc20Transfer": {
+    "cold": "51544",
+    "warm": "34444"
+  },
+  "openMandate": "156221",
+  "settleBatch": [
+    {
+      "claims": 1,
+      "calls": 10,
+      "kind": "first",
+      "gasUsed": "232190",
+      "transfers": 1,
+      "calldataBytes": 516,
+      "gasPerClaim": "232190"
+    },
+    {
+      "claims": 1,
+      "calls": 10,
+      "kind": "repeat",
+      "gasUsed": "180890",
+      "transfers": 1,
+      "calldataBytes": 516,
+      "gasPerClaim": "180890"
+    },
+    {
+      "claims": 2,
+      "calls": 20,
+      "kind": "first",
+      "gasUsed": "321232",
+      "transfers": 2,
+      "calldataBytes": 868,
+      "gasPerClaim": "160616"
+    },
+    {
+      "claims": 2,
+      "calls": 20,
+      "kind": "repeat",
+      "gasUsed": "233778",
+      "transfers": 2,
+      "calldataBytes": 868,
+      "gasPerClaim": "116889"
+    },
+    {
+      "claims": 16,
+      "calls": 160,
+      "kind": "first",
+      "gasUsed": "1199451",
+      "transfers": 13,
+      "calldataBytes": 5796,
+      "gasPerClaim": "74965"
+    },
+    {
+      "claims": 16,
+      "calls": 160,
+      "kind": "repeat",
+      "gasUsed": "772107",
+      "transfers": 13,
+      "calldataBytes": 5796,
+      "gasPerClaim": "48256"
+    },
+    {
+      "claims": 64,
+      "calls": 640,
+      "kind": "first",
+      "gasUsed": "2847630",
+      "transfers": 15,
+      "calldataBytes": 22692,
+      "gasPerClaim": "44494"
+    },
+    {
+      "claims": 64,
+      "calls": 640,
+      "kind": "repeat",
+      "gasUsed": "1907466",
+      "transfers": 15,
+      "calldataBytes": 22692,
+      "gasPerClaim": "29804"
+    }
+  ]
+}

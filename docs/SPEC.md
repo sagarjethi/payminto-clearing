@@ -208,7 +208,7 @@ Hsp = { paymentId, batchId, transferIndex, payer, recipient, token, amount, dead
 ```
 
 - `GET /v1/overview` -> `{ volume: { settled, pending, last24h }, calls: { all, last24h, pending, settled }, denials24h, denialsTotal, activeMandates, mandates, providers, batches, batchesConfirmed, batchesFailed, transfers, gasSaved: { gas, native: string | null, used, naive, perTransferAssumption }, compressionRatio, lastBatch: Batch | null, unsettledCalls, token: { address, symbol, decimals } }`.
-  `compressionRatio` is settled calls per on-chain transfer and is `0` before the first transfer; `gasSaved` is an estimate against one 50k-gas ERC-20 transfer per call.
+  `compressionRatio` is settled calls per on-chain transfer and is `0` before the first transfer; `gasSaved` compares against one ERC-20 transfer per call at the gas measured in `docs/GAS.md` (34,444).
 - `GET /v1/netting/preview` -> `{ calls, claims, batches, grossTotal, netTotal, gross: [{ from, to, amount, calls }], net: [{ from, to, amount }], transfers, compression, savedTransfers }` (`compression` is `0` when there is nothing to settle).
 - `POST /v1/settlements` -> `{ batchIds, batches: Batch[], dropped: [{ mandateId, payee, reason }] }` or `{ skipped: reason }`; it returns after the batches are confirmed or failed.
 - `GET /v1/receipts/:callId/proof` -> `{ receipt: ClearingReceipt, status, batchId, batchStatus, receiptsRoot, proof, leaf, txHash, explorerUrl, onchainVerified }`; batch fields are `null` and `proof` is `[]` until the call is batched, and `onchainVerified` is `null` until the batch is confirmed.
