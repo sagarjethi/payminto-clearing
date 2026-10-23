@@ -45,6 +45,30 @@ import {
   type CosignItem,
 } from "./node-api.ts";
 import { computeRequestHash, Emitter, KeyedMutex, revokeMessage, sleep as defaultSleep } from "./util.ts";
+import { checkBeforeSigning, PolicyMismatchError, verifyMandatePolicy, type MandatePolicy, type VerifiedPolicy } from "./policy-guard.ts";
+
+const policyBundleSchema = z.object({
+  mandate: z.object({
+    owner: z.string(),
+    agent: z.string(),
+    token: z.string(),
+    totalCap: z.string().regex(/^\d+$/),
+    validAfter: z.string().regex(/^\d+$/),
+    validUntil: z.string().regex(/^\d+$/),
+    payeesRoot: z.string(),
+    policyHash: z.string(),
+    salt: z.string(),
+  }),
+  policy: z.object({ perCallCap: z.string().regex(/^\d+$/), dailyCap: z.string().regex(/^\d+$/), maxCallsPerMinute: z.number().int().min(0), purpose: z.string() }),
+  payees: z.array(z.string()),
+});
+
+function refusal(code: string, message: string, details: Record<string, unknown>): Response {
+  return new Response(JSON.stringify({ x402Version: X402_VERSION, error: { code, message, details } }), {
+    status: 402,
+    headers: { "content-type": "application/json" },
+  });
+}
 
 /** Where the agent keeps receipts it was given; they justify (or refuse) HSP co-sign requests. */
 export interface ReceiptStore {
@@ -86,6 +110,13 @@ export type AgentClientOptions = {
   /** Extra HSP verifying contracts the agent accepts besides the hub (coordinator deployments). */
   hspVerifyingContracts?: readonly Address[];
   receipts?: ReceiptStore;
+  /**
+   * The mandate, its policy and allowlist. When omitted the client fetches them from the node
+   * (GET /v1/mandates/:id/policy). Either way they are verified against mandateId before use.
+   */
+  policy?: MandatePolicy;
+  /** Enforce the mandate policy before signing (default true). Turning it off leaves enforcement to the node and the hub. */
+  enforcePolicy?: boolean;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
@@ -147,6 +178,14 @@ export class AgentClient extends Emitter<AgentEvents> {
   readonly #cosignedByBatch = new Map<string, bigint>();
   readonly #handledCosigns = new Set<string>();
   #nodeUrl: string | undefined;
+  #policy: Promise<VerifiedPolicy> | null = null;
+  /** Highest cumulative ever seen per payee (never forgotten), for the total-cap check. */
+  readonly #known = new Map<string, bigint>();
+  /** Accepted spend of this client, for the rolling 24 h and per-minute checks. */
+  #spendLog: Array<{ at: number; amount: bigint }> = [];
+  /** Vouchers being signed or in flight, counted against caps so parallel payees cannot jointly overspend. */
+  readonly #reserved = new Map<number, { payee: string; amount: bigint; cumulative: bigint }>();
+  #reservationSeq = 0;
   #cosignTimer: ReturnType<typeof setInterval> | null = null;
   #cosignBusy: Promise<unknown> | null = null;
 
@@ -177,6 +216,48 @@ export class AgentClient extends Emitter<AgentEvents> {
     return { cumulative: BigInt(p.cumulative), settled: BigInt(p.settled) };
   }
 
+  /**
+   * The verified policy this client enforces before signing. Fetched once from the node unless given in the options,
+   * and rejected (PolicyMismatchError) unless it hashes to the mandate this client holds.
+   */
+  loadPolicy(): Promise<VerifiedPolicy> {
+    this.#policy ??= (async () => {
+      const bundle: MandatePolicy =
+        this.#o.policy ??
+        ((await this.#node().get(`/v1/mandates/${this.mandateId}/policy`, policyBundleSchema)) as unknown as MandatePolicy);
+      return verifyMandatePolicy(this.chainId, this.hub, this.mandateId, bundle);
+    })();
+    this.#policy.catch(() => {
+      this.#policy = null; // retry on the next call
+    });
+    return this.#policy;
+  }
+
+  #learn(key: string, cumulative: bigint): void {
+    if (cumulative > (this.#known.get(key) ?? 0n)) this.#known.set(key, cumulative);
+  }
+
+  /** Synchronous check-and-reserve: nothing can interleave between the policy decision and the reservation. */
+  #reserve(policy: VerifiedPolicy, asset: Address, payee: Address, amount: bigint, cumulative: bigint) {
+    const now = Math.floor(Date.now() / 1000);
+    const key = payee.toLowerCase();
+    this.#spendLog = this.#spendLog.filter((e) => e.at > now - 86_400);
+    let otherPayeesTotal = 0n;
+    for (const [p, c] of this.#known) if (p !== key) otherPayeesTotal += c;
+    let reservedAmount = 0n;
+    for (const r of this.#reserved.values()) {
+      reservedAmount += r.amount;
+      if (r.payee !== key) otherPayeesTotal += r.amount;
+    }
+    const spentLast24h = this.#spendLog.reduce((s, e) => s + e.amount, 0n) + reservedAmount;
+    const callsLastMinute = this.#spendLog.filter((e) => e.at > now - 60).length + this.#reserved.size;
+    const denial = checkBeforeSigning({ now, policy, asset, payee, amount, cumulative, otherPayeesTotal, spentLast24h, callsLastMinute });
+    if (denial) return { denial, id: null };
+    const id = ++this.#reservationSeq;
+    this.#reserved.set(id, { payee: key, amount, cumulative });
+    return { denial: null, id };
+  }
+
   /** fetch() that pays `payminto-voucher` 402 requirements and returns the provider's response. */
   async fetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
     const req = await prepare(input, init);
@@ -193,7 +274,7 @@ export class AgentClient extends Emitter<AgentEvents> {
     }
     if (!this.#nodeUrl) this.#nodeUrl = requirement.extra.clearingNode.replace(/\/+$/, "");
     const requestHash = computeRequestHash(req.method, req.url, req.body);
-    return this.#mutex.run(`${this.mandateId}:${payee}`, () => this.#pay(req, payee, amount, requestHash));
+    return this.#mutex.run(`${this.mandateId}:${payee}`, () => this.#pay(req, payee, amount, requestHash, getAddress(requirement.asset)));
   }
 
   async #pickRequirement(res: Response): Promise<PaymentRequirement | null> {
@@ -217,16 +298,77 @@ export class AgentClient extends Emitter<AgentEvents> {
     return this.#fetch(req.url, { method: req.method, headers, body: req.body as BodyInit | undefined });
   }
 
-  async #pay(req: PreparedRequest, payee: Address, amount: bigint, requestHash: Hex): Promise<Response> {
+  async #pay(req: PreparedRequest, payee: Address, amount: bigint, requestHash: Hex, asset: Address): Promise<Response> {
     const key = payee.toLowerCase();
     const maxRetries = this.#o.maxRetries ?? 3;
     const sleep = this.#o.sleep ?? defaultSleep;
     const random = this.#o.random ?? Math.random;
-    let position = this.#positions.get(key);
-    if (position === undefined) position = (await this.position(payee)).cumulative;
+    const enforce = this.#o.enforcePolicy !== false;
+    let policy: VerifiedPolicy | null = null;
+    if (enforce) {
+      try {
+        policy = await this.loadPolicy();
+      } catch (err) {
+        // Fail closed: without a verified policy the agent does not sign.
+        const code = err instanceof PolicyMismatchError ? "POLICY_MISMATCH" : "POLICY_UNAVAILABLE";
+        const message = err instanceof Error ? err.message : String(err);
+        this.emit("denied", { code, message, url: req.url, payee, amount, details: { enforcedBy: "agent" } });
+        return refusal(code, message, { enforcedBy: "agent" });
+      }
+    }
+    let position: bigint = this.#positions.get(key) ?? (await this.position(payee)).cumulative;
+    this.#learn(key, position);
 
-    for (let attempt = 0; ; attempt++) {
-      const cumulative = position + amount;
+    let reservation: number | null = null;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const cumulative = position + amount;
+        if (policy) {
+          if (reservation !== null) this.#reserved.delete(reservation);
+          reservation = null;
+          const r = this.#reserve(policy, asset, payee, amount, cumulative);
+          if (r.denial) {
+            const d = r.denial;
+            this.emit("denied", { code: d.code, message: d.message, details: d.details, url: req.url, payee, amount });
+            return refusal(d.code, d.message, d.details);
+          }
+          reservation = r.id;
+        }
+        const res = await this.#attempt(req, payee, amount, requestHash, cumulative);
+        if (res.kind === "paid") {
+          this.#spendLog.push({ at: Math.floor(Date.now() / 1000), amount });
+          return res.response;
+        }
+        if (res.kind !== "stale") return res.response;
+        if (attempt >= maxRetries) {
+          this.#positions.delete(key);
+          this.emit("denied", { code: "STALE_CUMULATIVE", message: res.message, details: res.details, url: req.url, payee, amount });
+          return res.response;
+        }
+        position = res.position ?? (await this.position(payee)).cumulative;
+        this.#positions.set(key, position);
+        this.#learn(key, position);
+        // Jittered backoff: 25-75 ms, doubling per attempt, so racing processes spread out.
+        await sleep(Math.round((25 + random() * 50) * 2 ** attempt));
+      }
+    } finally {
+      if (reservation !== null) this.#reserved.delete(reservation);
+    }
+  }
+
+  /** Signs one voucher and sends it. "stale" means the node asked for a re-sign at a newer position. */
+  async #attempt(
+    req: PreparedRequest,
+    payee: Address,
+    amount: bigint,
+    requestHash: Hex,
+    cumulative: bigint,
+  ): Promise<
+    | { kind: "paid" | "done"; response: Response }
+    | { kind: "stale"; response: Response; position: bigint | null; message: string; details?: Record<string, unknown> }
+  > {
+    const key = payee.toLowerCase();
+    {
       const signature = await this.account.signTypedData(
         voucherTypedData(this.chainId, this.hub, { mandateId: this.mandateId, payee, cumulative }),
       );
@@ -240,35 +382,26 @@ export class AgentClient extends Emitter<AgentEvents> {
       const paid = decodeHeader<unknown>(res.headers.get(HEADER_RESPONSE));
       if (paid) {
         this.#positions.set(key, cumulative);
+        this.#learn(key, cumulative);
         await this.#acceptReceipt(paid, { payee, amount, cumulative, requestHash, url: req.url });
-        return res;
+        return { kind: "paid", response: res };
       }
       if (res.status !== 402) {
-        // Unknown payment outcome: forget the cached position so the next call resyncs with the node.
+        // Unknown payment outcome: count the signed cumulative as exposure and resync the position next time.
+        this.#learn(key, cumulative);
         this.#positions.delete(key);
-        return res;
+        return { kind: "done", response: res };
       }
       const denial = errorSchema.safeParse(await res.clone().json().catch(() => null));
       const code = denial.success ? denial.data.error.code : "PAYMENT_REQUIRED";
       const details = denial.success ? denial.data.error.details : undefined;
-      if (code === "STALE_CUMULATIVE" && attempt < maxRetries) {
+      const message = denial.success ? denial.data.error.message : "payment required";
+      if (code === "STALE_CUMULATIVE") {
         const fromDetails = positionSchema.safeParse(details?.position);
-        position = fromDetails.success ? BigInt(fromDetails.data.cumulative) : (await this.position(payee)).cumulative;
-        this.#positions.set(key, position);
-        // Jittered backoff: 25-75 ms, doubling per attempt, so racing processes spread out.
-        await sleep(Math.round((25 + random() * 50) * 2 ** attempt));
-        continue;
+        return { kind: "stale", response: res, position: fromDetails.success ? BigInt(fromDetails.data.cumulative) : null, message, details };
       }
-      if (code === "STALE_CUMULATIVE") this.#positions.delete(key);
-      this.emit("denied", {
-        code,
-        message: denial.success ? denial.data.error.message : "payment required",
-        details,
-        url: req.url,
-        payee,
-        amount,
-      });
-      return res;
+      this.emit("denied", { code, message, details, url: req.url, payee, amount });
+      return { kind: "done", response: res };
     }
   }
 

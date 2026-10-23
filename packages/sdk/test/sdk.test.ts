@@ -4,6 +4,12 @@ import { getAddress, keccak256, toBytes, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   buildNetTransferMandate,
+  mandateId,
+  mandateToJson,
+  payeesRoot,
+  policyHash,
+  type Mandate,
+  type Policy,
   encodeHeader,
   hspMandateToWire,
   hspPaymentId,
@@ -23,10 +29,37 @@ const HUB = "0x5FbDB2315678afecb367f032d93F642f64180aa3" as Address;
 const TOKEN = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512" as Address;
 const PAYEE = "0x90F79bf6EB2c4f870365E785982E1f101E93b906" as Address;
 const PAYEE_2 = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65" as Address;
-const MANDATE = keccak256(toBytes("mandate-1"));
+const OWNER = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
+const NOW = Math.floor(Date.now() / 1000);
+const POLICY: Policy = { perCallCap: "10000", dailyCap: "1000000", maxCallsPerMinute: 0, purpose: "sdk tests" };
+
+type Bundle = { id: Hex; mandate: Mandate; policy: Policy; payees: Address[] };
+function bundle(over: { mandate?: Partial<Mandate>; policy?: Partial<Policy>; payees?: Address[] } = {}): Bundle {
+  const policy = { ...POLICY, ...over.policy };
+  const payees = over.payees ?? [];
+  const mandate: Mandate = {
+    owner: OWNER.address,
+    agent: AGENT.address,
+    token: TOKEN,
+    totalCap: 10_000_000n,
+    validAfter: BigInt(NOW - 60),
+    validUntil: BigInt(NOW + 86_400),
+    payeesRoot: payeesRoot(payees),
+    policyHash: policyHash(policy),
+    salt: keccak256(toBytes("salt")),
+    ...over.mandate,
+  };
+  return { id: mandateId(31337, HUB, mandate), mandate, policy, payees };
+}
+const DEFAULT = bundle();
+const MANDATE = DEFAULT.id;
 const NODE_URL = "http://node.test";
 
 type Script = {
+  /** The mandate the fake node clears (default DEFAULT). */
+  bundle?: Bundle;
+  /** What GET /v1/mandates/:id/policy serves; defaults to the honest bundle. */
+  servedPolicy?: { mandate: Mandate; policy: Policy; payees: Address[] };
   /** Positions served by GET /position, lagging the truth by this many calls (simulates another process). */
   lagPosition?: number;
   alwaysStale?: boolean;
@@ -45,7 +78,13 @@ function world(script: Script = {}) {
   const cosigned: Array<{ id: string; signerProof: Hex }> = [];
   const voucherPosts: unknown[] = [];
 
+  const b = script.bundle ?? DEFAULT;
+  const MANDATE = b.id;
   const node = new Hono();
+  node.get("/v1/mandates/:id/policy", (c) => {
+    const served = script.servedPolicy ?? b;
+    return c.json({ id: MANDATE, status: "open", mandate: mandateToJson(served.mandate), policy: served.policy, payees: served.payees });
+  });
   node.get("/v1/info", (c) =>
     c.json({ version: "t", network: { chainId: 31337, caip2: "eip155:31337" }, hub: HUB, token: { address: TOKEN, symbol: "USDC", decimals: 6 }, operator: NODE.address, publicUrl: NODE_URL }),
   );
@@ -127,11 +166,20 @@ function world(script: Script = {}) {
   );
 
   const sleeps: number[] = [];
+  const voucherSignatures: unknown[] = [];
+  // Counts every voucher signature the agent produces, so tests can prove a refused call signs nothing.
+  const countingAccount = {
+    ...AGENT,
+    signTypedData: (async (args: { primaryType: string }) => {
+      if (args.primaryType === "Voucher") voucherSignatures.push(args);
+      return AGENT.signTypedData(args as never);
+    }) as typeof AGENT.signTypedData,
+  };
   const agent = (over: Partial<ConstructorParameters<typeof AgentClient>[0]> = {}) =>
     new AgentClient({
       chainId: 31337,
       hub: HUB,
-      account: AGENT,
+      account: countingAccount,
       mandateId: MANDATE,
       fetch: fetchAll,
       trustedNode: NODE.address,
@@ -149,6 +197,7 @@ function world(script: Script = {}) {
     cosigned,
     sleeps,
     voucherPosts,
+    voucherSignatures,
     stats: () => ({ maxInflightSamePayee, maxInflightAll }),
   };
 }
@@ -233,6 +282,81 @@ describe("AgentClient.fetch", () => {
     expect((await a.fetch("http://provider.test/q")).status).toBe(402);
     expect(denied.map((d) => d.code)).toEqual(["CLIENT_MAX_PRICE"]);
     expect(w.voucherPosts).toHaveLength(0);
+  });
+});
+
+describe("AgentClient pre-sign policy guard", () => {
+  const OTHER_TOKEN = "0x054ed45810DbBAb8B27668922D110669c9D88D0a" as Address;
+
+  /** Makes `ok` paid calls, then one call that must be refused locally with `rule` and never signed. */
+  async function refused(rule: string, b: Bundle, calls: { ok: string[]; refused: string }) {
+    const w = world({ bundle: b });
+    const a = w.agent();
+    const denied: DeniedEvent[] = [];
+    a.on("denied", (d) => denied.push(d));
+    for (const path of calls.ok) expect((await a.fetch(`http://provider.test${path}`, path === "/b" ? { method: "POST", body: "{}" } : undefined)).status, path).toBe(200);
+    const signedBefore = w.voucherSignatures.length;
+    const res = await a.fetch(`http://provider.test${calls.refused}`, calls.refused === "/b" ? { method: "POST", body: "{}" } : undefined);
+    expect(res.status).toBe(402);
+    const body = (await res.json()) as { error: { code: string; details: { enforcedBy: string } } };
+    expect(body.error.code).toBe(rule);
+    expect(body.error.details.enforcedBy).toBe("agent");
+    expect(denied.map((d) => d.code)).toEqual([rule]);
+    expect(w.voucherSignatures.length, "no voucher signature for a refused call").toBe(signedBefore);
+    expect(w.voucherPosts).toHaveLength(calls.ok.length);
+  }
+
+  it("PER_CALL_CAP", () => refused("PER_CALL_CAP", bundle({ policy: { perCallCap: "1999" } }), { ok: [], refused: "/q" }));
+  it("PAYEE_NOT_ALLOWED", () => refused("PAYEE_NOT_ALLOWED", bundle({ payees: [PAYEE_2] }), { ok: ["/b"], refused: "/q" }));
+  it("MANDATE_NOT_ACTIVE (expired)", () =>
+    refused("MANDATE_NOT_ACTIVE", bundle({ mandate: { validAfter: BigInt(NOW - 100), validUntil: BigInt(NOW - 10) } }), { ok: [], refused: "/q" }));
+  it("MANDATE_NOT_ACTIVE (not yet valid)", () => refused("MANDATE_NOT_ACTIVE", bundle({ mandate: { validAfter: BigInt(NOW + 600) } }), { ok: [], refused: "/q" }));
+  it("TOKEN_MISMATCH", () => refused("TOKEN_MISMATCH", bundle({ mandate: { token: OTHER_TOKEN } }), { ok: [], refused: "/q" }));
+  it("RATE_LIMIT", () => refused("RATE_LIMIT", bundle({ policy: { maxCallsPerMinute: 2 } }), { ok: ["/q", "/b"], refused: "/q" }));
+  it("DAILY_CAP", () => refused("DAILY_CAP", bundle({ policy: { dailyCap: "6999" } }), { ok: ["/q", "/q"], refused: "/b" }));
+  it("TOTAL_CAP counts every payee's cumulative", () =>
+    refused("TOTAL_CAP", bundle({ mandate: { totalCap: 8_999n } }), { ok: ["/q", "/q"], refused: "/b" }));
+
+  it("reserves in-flight vouchers so parallel payees cannot jointly exceed a cap", async () => {
+    const w = world({ bundle: bundle({ mandate: { totalCap: 6_000n } }) });
+    const a = w.agent();
+    const res = await Promise.all([a.fetch("http://provider.test/q"), a.fetch("http://provider.test/b", { method: "POST", body: "{}" })]);
+    expect(res.map((r) => r.status).sort()).toEqual([200, 402]);
+    expect(w.voucherSignatures).toHaveLength(1);
+  });
+
+  it("refuses to sign anything when the node serves a policy that does not hash to the mandate", async () => {
+    const strict = bundle({ policy: { perCallCap: "1000" }, payees: [PAYEE_2] });
+    for (const served of [
+      { ...strict, policy: { ...strict.policy, perCallCap: "1000000" } }, // loosened cap
+      { ...strict, payees: [] }, // dropped allowlist
+      { ...strict, mandate: { ...strict.mandate, totalCap: 10n ** 18n } }, // different mandate
+    ]) {
+      const w = world({ bundle: strict, servedPolicy: served });
+      const a = w.agent();
+      const denied: DeniedEvent[] = [];
+      a.on("denied", (d) => denied.push(d));
+      const res = await a.fetch("http://provider.test/q");
+      expect(res.status).toBe(402);
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe("POLICY_MISMATCH");
+      expect(denied.map((d) => d.code)).toEqual(["POLICY_MISMATCH"]);
+      expect(w.voucherSignatures).toHaveLength(0);
+    }
+  });
+
+  it("accepts the policy as a constructor option, still verified, without asking the node", async () => {
+    const b = bundle({ policy: { perCallCap: "1999" } });
+    const w = world({ bundle: b, servedPolicy: DEFAULT });
+    const a = w.agent({ policy: { mandate: b.mandate, policy: b.policy, payees: b.payees } });
+    expect((await a.fetch("http://provider.test/q")).status).toBe(402);
+    expect(w.voucherSignatures).toHaveLength(0);
+    const bad = w.agent({ policy: { mandate: b.mandate, policy: { ...b.policy, perCallCap: "99999" }, payees: [] } });
+    await expect(bad.loadPolicy()).rejects.toThrow(/policyHash/);
+  });
+
+  it("can be turned off, leaving enforcement to the node and the hub", async () => {
+    const w = world({ bundle: bundle({ policy: { perCallCap: "1999" } }) });
+    expect((await w.agent({ enforcePolicy: false }).fetch("http://provider.test/q")).status).toBe(200);
   });
 });
 

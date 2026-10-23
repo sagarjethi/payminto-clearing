@@ -3,3 +3,4 @@ export { OwnerClient, type OwnerClientOptions, type CreateMandateArgs } from "./
 export { paywall, parseDenial, type Paywall, type PaywallOptions, type PaidContext, type PaywallCheck } from "./paywall.ts";
 export { NodeApiError, NodeHttp, type CosignItem, type NodeInfo, type Position } from "./node-api.ts";
 export { computeRequestHash, revokeMessage, KeyedMutex } from "./util.ts";
+export { checkBeforeSigning, verifyMandatePolicy, PolicyMismatchError, type MandatePolicy, type VerifiedPolicy, type PreSignDenial } from "./policy-guard.ts";

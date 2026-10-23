@@ -56,6 +56,9 @@ Errors name the variable and never print its value, and logs never contain keys 
 
 ## How a call is cleared
 
+Policy is enforced twice: by the agent before signing and by the node before accepting; total cap, allowlist and expiry a third time on chain.
+Agents fetch the policy they enforce from the public `GET /v1/mandates/:id/policy` and verify it against the mandate hashes (see `packages/sdk/README.md`).
+
 1. The provider's paywall (`@payminto/sdk`) forwards the agent's voucher to `POST /v1/vouchers`.
 2. The node verifies the voucher signature (EOA, or ERC-1271 for contract agents), then loads mandate state and evaluates every rule in the SPEC 5.4 order inside one `BEGIN IMMEDIATE` transaction, so parallel calls cannot overspend.
 3. An accepted call gets a receipt signed by the operator over its Merkle leaf, a ledger journal (debit provider receivable, credit agent payable), and a `call.accepted` event; a refused call gets a recorded denial with its rule.

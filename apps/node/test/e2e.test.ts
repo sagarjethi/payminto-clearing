@@ -214,7 +214,24 @@ describe("clearing end to end", () => {
     expect(((await over.json()) as { error: { code: string } }).error.code).toBe("PER_CALL_CAP");
     expect(((await na.json()) as { error: { code: string } }).error.code).toBe("PAYEE_NOT_ALLOWED");
     expect(denials.map((d) => d.code).sort()).toEqual(["PAYEE_NOT_ALLOWED", "PER_CALL_CAP"]);
+    // Agent A refused both before signing, so the node never saw them.
+    expect(denials.every((d) => d.details?.enforcedBy === "agent")).toBe(true);
+    expect((await api<unknown[]>("GET", "/v1/denials")).json).toHaveLength(1); // only the STALE_CUMULATIVE above
     expect(errors).toEqual([]);
+
+    // Policy is enforced twice: a client that skips the pre-sign guard (a buggy or compromised agent) is still
+    // refused by the node with the same rules.
+    const unguarded = new AgentClient({ nodeUrl: node.url, chainId: 31337, hub, account: AGENT_A, mandateId: a.mandateId, enforcePolicy: false });
+    const nodeOver = await unguarded.fetch(`${marketUrl}/premium`);
+    const nodeNa = await unguarded.fetch(`${writerUrl}/rogue`);
+    expect(((await nodeOver.json()) as { error: { code: string } }).error.code).toBe("PER_CALL_CAP");
+    expect(((await nodeNa.json()) as { error: { code: string } }).error.code).toBe("PAYEE_NOT_ALLOWED");
+    const nodeDenials = await api<Array<{ rule: string }>>("GET", "/v1/denials?limit=2");
+    expect(nodeDenials.json.map((d) => d.rule).sort()).toEqual(["PAYEE_NOT_ALLOWED", "PER_CALL_CAP"]);
+    // The public policy route serves exactly what the mandate commits to.
+    const served = await api<{ policy: unknown; payees: string[] }>("GET", `/v1/mandates/${a.mandateId}/policy`, undefined, false);
+    expect(served.json.policy).toEqual(policyA);
+    expect(served.json.payees).toEqual([...payeesA].sort());
 
     const acceptedCalls = 3 + jobs.length; // 51
     expect(receipts).toHaveLength(acceptedCalls);

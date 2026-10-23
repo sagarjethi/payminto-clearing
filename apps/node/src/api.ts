@@ -272,6 +272,16 @@ export function createApi(s: NodeServices): Hono<Vars> {
     return c.json(s.vouchers.positionJson(id, payee));
   });
 
+  // Public: the signed mandate, its policy and allowlist. Safe to expose (the mandate is public on chain and commits
+  // to both via policyHash and payeesRoot); agents verify those hashes and enforce the policy before signing.
+  app.get("/v1/mandates/:id/policy", (c) => {
+    const id = param(c.req.param("id"), zBytes32, "id");
+    const m = store.mandate(id);
+    if (!m) throw new ApiError(404, "UNKNOWN_MANDATE", "No open mandate with this id on this node");
+    const summary = store.mandateSummary(m, nowSec());
+    return c.json({ id: m.id, status: summary.status, mandate: summary.mandate, policy: summary.policy, payees: summary.payees });
+  });
+
   app.get("/v1/receipts/:callId/proof", async (c) => {
     const callId = param(c.req.param("callId"), zBytes32, "callId");
     const call = store.call(callId);
