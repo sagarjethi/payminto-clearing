@@ -3,8 +3,8 @@
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Search, ShieldCheck } from "lucide-react";
-import { useCalls, useDirectory } from "@/lib/queries";
+import { Loader2, Search, ShieldCheck } from "lucide-react";
+import { flattenCallPages, useCallPages, useDirectory } from "@/lib/queries";
 import { timeAgo } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,7 +16,8 @@ export default function ReceiptsPage() {
   const router = useRouter();
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const calls = useCalls({ status: "settled", limit: 10 });
+  const pages = useCallPages({ status: "settled", limit: 10 });
+  const items = flattenCallPages(pages.data?.pages);
   const dir = useDirectory();
 
   function submit(e: FormEvent) {
@@ -65,17 +66,17 @@ export default function ReceiptsPage() {
           </form>
         </Panel>
         <Panel title="Recent settled calls" bodyClassName="p-0 sm:p-0">
-          {calls.isPending ? (
+          {pages.isPending ? (
             <RowsSkeleton className="px-5" rows={5} />
-          ) : calls.isError ? (
-            <ErrorState className="m-4" error={calls.error} onRetry={() => void calls.refetch()} />
-          ) : calls.data.items.length === 0 ? (
+          ) : pages.isError ? (
+            <ErrorState className="m-4" error={pages.error} onRetry={() => void pages.refetch()} />
+          ) : items.length === 0 ? (
             <EmptyState icon={<ShieldCheck className="size-4" />} title="No settled calls yet">
               A call becomes provable once the batch that cleared it is confirmed on chain.
             </EmptyState>
           ) : (
             <ul className="divide-y">
-              {calls.data.items.map((c) => (
+              {items.map((c) => (
                 <li key={c.id}>
                   <Link href={`/receipts/${c.id}`} className="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-muted/40 sm:px-5">
                     <span className="hash w-28 shrink-0 text-xs text-muted-foreground">
@@ -90,6 +91,13 @@ export default function ReceiptsPage() {
                 </li>
               ))}
             </ul>
+          )}
+          {pages.hasNextPage && (
+            <div className="border-t px-4 py-3 sm:px-5">
+              <Button variant="outline" size="sm" className="w-full" onClick={() => void pages.fetchNextPage()} disabled={pages.isFetchingNextPage}>
+                {pages.isFetchingNextPage && <Loader2 className="animate-spin" />} Load more calls
+              </Button>
+            </div>
           )}
         </Panel>
       </div>

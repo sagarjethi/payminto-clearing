@@ -42,7 +42,7 @@ export const HSP_EXPLAIN: Record<HspStatus, { tone: Tone; label: string; text: s
   ACCEPT: {
     tone: "positive",
     label: "ACCEPT",
-    text: "The HSP verifier checked the on-chain NetTransfer log against the co-signed HSP mandate and every required capability was satisfied.",
+    text: "HSP verifier accepted: settlement observed and bound to this batch.",
   },
   SETTLED: {
     tone: "positive",
@@ -52,7 +52,7 @@ export const HSP_EXPLAIN: Record<HspStatus, { tone: Tone; label: string; text: s
   UNSIGNED: {
     tone: "warning",
     label: "UNSIGNED",
-    text: "The debtor agent did not co-sign the HSP mandate in time. The transfer still settled on the strength of its signed vouchers; only the HSP wrapper is missing.",
+    text: "Settled on chain from agent-signed vouchers. The payer agent did not co-sign the HSP mandate within the window.",
   },
   REJECT: {
     tone: "negative",

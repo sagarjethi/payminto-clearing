@@ -55,7 +55,7 @@ export default function ProofPage() {
     <>
       <PageHeader back={back} title="Receipt proof" description={<span className="hash break-all text-sm">{callId}</span>} />
       <Verdict p={p} />
-      <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+      <div className="mt-5 grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
         <Panel title="Receipt" description="Signed by the clearing node when it accepted the voucher">
           <Fields>
             <Field label="Amount"><Money atomic={p.receipt.amount} className="font-medium" /></Field>

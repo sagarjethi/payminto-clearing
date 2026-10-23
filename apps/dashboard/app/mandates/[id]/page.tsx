@@ -11,10 +11,11 @@ import { Ban, Loader2, Radio, Wallet } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
 import { useApi } from "@/lib/session";
-import { qk, useInfo, useMandate, useToken } from "@/lib/queries";
+import { qk, flattenCallPages, useCallPages, useInfo, useMandate, useToken } from "@/lib/queries";
 import { formatDate, formatDateTime, formatInt, formatMoney, percentOf, timeAgo } from "@/lib/format";
 import { ApiError } from "@/lib/api";
 import type { MandateDetail } from "@/lib/schemas";
+import { axisTick, chartColor } from "@/lib/chart-theme";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -30,7 +31,8 @@ import {
 import { Address, Field, Fields, Hash, Meter, Money, PageHeader, Panel, PartyLine } from "@/components/app/primitives";
 import { CallStatusChip, MandateStatusChip, RuleChip } from "@/components/app/status";
 import { StatStrip } from "@/components/app/stat-strip";
-import { BlockSkeleton, EmptyState, ErrorState } from "@/components/app/states";
+import { AgentWallet } from "@/components/app/agent-wallet";
+import { BlockSkeleton, EmptyState, ErrorState, RowsSkeleton } from "@/components/app/states";
 
 export default function MandateDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -126,6 +128,7 @@ export default function MandateDetailPage() {
               </Field>
             </Fields>
           </Panel>
+          <AgentWallet m={m} />
           <OnChain m={m} />
         </div>
       </div>
@@ -234,12 +237,6 @@ function OnChain({ m }: { m: MandateDetail }) {
         <Field label="Opened by tx"><Hash value={m.openTxHash} kind="tx" /></Field>
         <Field label="Payees root"><Hash value={m.mandate.payeesRoot} /></Field>
         <Field label="Policy hash"><Hash value={m.mandate.policyHash} /></Field>
-        {m.agentBalance != null && <Field label="Agent balance"><Money atomic={m.agentBalance} /></Field>}
-        {m.agentAllowance != null && (
-          <Field label="Hub allowance">
-            <Money atomic={m.agentAllowance} className={BigInt(m.agentAllowance) < BigInt(m.spend.pending) ? "text-negative" : undefined} />
-          </Field>
-        )}
       </Fields>
     </Panel>
   );
@@ -270,15 +267,15 @@ function SpendChart({ m }: { m: MandateDetail }) {
             <AreaChart data={data} margin={{ top: 6, right: 4, bottom: 0, left: -12 }}>
               <defs>
                 <linearGradient id="spendFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--primary)" stopOpacity={0.18} />
-                  <stop offset="100%" stopColor="var(--primary)" stopOpacity={0} />
+                  <stop offset="0%" stopColor={chartColor("line")} stopOpacity={0.18} />
+                  <stop offset="100%" stopColor={chartColor("line")} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid vertical={false} stroke="var(--border)" />
-              <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fill: "var(--subtle)", fontSize: 11 }} minTickGap={24} />
-              <YAxis tickLine={false} axisLine={false} tick={{ fill: "var(--subtle)", fontSize: 11 }} width={48} tickFormatter={(v: number) => v.toFixed(2)} />
+              <CartesianGrid vertical={false} stroke={chartColor("grid")} />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} tick={axisTick} minTickGap={24} />
+              <YAxis tickLine={false} axisLine={false} tick={axisTick} width={48} tickFormatter={(v: number) => v.toFixed(2)} />
               <Tooltip
-                cursor={{ stroke: "var(--subtle)", strokeDasharray: "3 3" }}
+                cursor={{ stroke: chartColor("axis"), strokeDasharray: "3 3" }}
                 content={({ active, payload }) => {
                   const p = payload?.[0]?.payload as (typeof data)[number] | undefined;
                   if (!active || !p) return null;
@@ -292,7 +289,7 @@ function SpendChart({ m }: { m: MandateDetail }) {
                   );
                 }}
               />
-              <Area type="monotone" dataKey="value" stroke="var(--primary)" strokeWidth={2} fill="url(#spendFill)" isAnimationActive={false} />
+              <Area type="monotone" dataKey="value" stroke={chartColor("line")} strokeWidth={2} fill="url(#spendFill)" isAnimationActive={false} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -302,9 +299,15 @@ function SpendChart({ m }: { m: MandateDetail }) {
 }
 
 function CallsTable({ m }: { m: MandateDetail }) {
+  const pages = useCallPages({ mandateId: m.id, limit: 15 });
+  const calls = flattenCallPages(pages.data?.pages);
   return (
-    <Panel title="Recent calls" description="Newest first; open one to see its Merkle proof" bodyClassName="p-0 sm:p-0">
-      {m.recentCalls.length === 0 ? (
+    <Panel title="Calls" description="Newest first; open one to see its Merkle proof" bodyClassName="p-0 sm:p-0">
+      {pages.isPending ? (
+        <RowsSkeleton className="px-5" rows={6} />
+      ) : pages.isError ? (
+        <ErrorState className="m-4" error={pages.error} onRetry={() => void pages.refetch()} />
+      ) : calls.length === 0 ? (
         <EmptyState icon={<Radio className="size-4" />} title="No calls under this mandate yet" />
       ) : (
         <div className="overflow-x-auto">
@@ -319,7 +322,7 @@ function CallsTable({ m }: { m: MandateDetail }) {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {m.recentCalls.slice(0, 12).map((c) => (
+              {calls.map((c) => (
                 <tr key={c.id} className="hover:bg-muted/40">
                   <td className="px-5 py-2.5"><Address address={c.payee} explorer={false} copy={false} /></td>
                   <td className="px-3 py-2.5 text-right">
@@ -332,6 +335,13 @@ function CallsTable({ m }: { m: MandateDetail }) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+      {pages.hasNextPage && (
+        <div className="border-t px-4 py-3 sm:px-5">
+          <Button variant="outline" size="sm" className="w-full" onClick={() => void pages.fetchNextPage()} disabled={pages.isFetchingNextPage}>
+            {pages.isFetchingNextPage && <Loader2 className="animate-spin" />} Load more calls
+          </Button>
         </div>
       )}
     </Panel>

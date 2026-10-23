@@ -159,7 +159,8 @@ function makeMandate(args: {
     revokedAt: args.status === "revoked" ? iso(args.createdMs + 3_600_000) : null,
     createdAt: iso(args.createdMs),
     agentBalance: (args.totalCap * 2n).toString(),
-    agentAllowance: args.totalCap.toString(),
+    // The trading agent approved less than its cap, so the wallet panel shows the approve action.
+    agentAllowance: args.key === "trading" ? (500_000n).toString() : args.totalCap.toString(),
     recentDenials: [],
   };
 }
@@ -350,7 +351,7 @@ function settlePending(atMs: number, hspPlan: (i: number) => HspStatus = () => "
         cosigned: status !== "UNSIGNED",
         reason:
           status === "UNSIGNED"
-            ? "Debtor agent did not co-sign within 20 s; the transfer settled on the strength of its vouchers."
+            ? "Settled on chain from agent-signed vouchers. The payer agent did not co-sign the HSP mandate within the 20 s window."
             : status === "REJECT"
               ? "Required capability proves:settlement-verified:v1 was not satisfied."
               : null,
@@ -767,6 +768,12 @@ export class MockClearingApi implements ClearingApi {
 
   eventsUrl() {
     return null;
+  }
+
+  async mockApprove(mandateId: string, amount: string): Promise<void> {
+    await delay(900);
+    const m = mandates.find((x) => x.id === mandateId);
+    if (m) m.agentAllowance = amount;
   }
 
   subscribe(listener: Listener): () => void {

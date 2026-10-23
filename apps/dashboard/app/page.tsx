@@ -8,6 +8,7 @@ import { useBatches, useCalls, useDenials, useDirectory, useMandates, useNetting
 import { formatGas, formatInt, formatMoney, formatRatio, timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Batch, Call, Denial } from "@/lib/schemas";
+import { axisTick, chartColor } from "@/lib/chart-theme";
 import { Button } from "@/components/ui/button";
 import { Money, PageHeader, Panel } from "@/components/app/primitives";
 import { BatchStatusChip, RuleChip } from "@/components/app/status";
@@ -181,11 +182,11 @@ function CallsChart() {
         <div className="h-48 w-full" role="img" aria-label={`Calls per hour over the last 12 hours, peak ${Math.max(...data.map((d) => d.calls))}`}>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: -18 }} barCategoryGap={3}>
-              <CartesianGrid vertical={false} stroke="var(--border)" />
-              <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fill: "var(--subtle)", fontSize: 11 }} interval="preserveStartEnd" minTickGap={18} />
-              <YAxis tickLine={false} axisLine={false} tick={{ fill: "var(--subtle)", fontSize: 11 }} allowDecimals={false} width={44} />
+              <CartesianGrid vertical={false} stroke={chartColor("grid")} />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} tick={axisTick} interval="preserveStartEnd" minTickGap={18} />
+              <YAxis tickLine={false} axisLine={false} tick={axisTick} allowDecimals={false} width={44} />
               <Tooltip
-                cursor={{ fill: "var(--muted)" }}
+                cursor={{ fill: chartColor("cursor") }}
                 content={({ active, payload }) => {
                   const p = payload?.[0]?.payload as (typeof data)[number] | undefined;
                   if (!active || !p) return null;
@@ -199,7 +200,7 @@ function CallsChart() {
                   );
                 }}
               />
-              <Bar dataKey="calls" fill="var(--primary)" radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
+              <Bar dataKey="calls" fill={chartColor("bar")} radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
             </BarChart>
           </ResponsiveContainer>
         </div>

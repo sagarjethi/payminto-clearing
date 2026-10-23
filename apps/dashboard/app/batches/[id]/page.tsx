@@ -1,13 +1,13 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { ArrowRight } from "lucide-react";
 import { useBatch, useMandates } from "@/lib/queries";
 import { formatDateTime, formatGas, formatInt, formatRatio } from "@/lib/format";
 import type { HspStatus } from "@/lib/schemas";
 import { Address, Field, Fields, Hash, Money, PageHeader, Panel } from "@/components/app/primitives";
-import { BatchStatusChip, Chip, HSP_EXPLAIN, HspChip } from "@/components/app/status";
+import { BatchStatusChip, Chip, HSP_EXPLAIN } from "@/components/app/status";
 import { StatStrip } from "@/components/app/stat-strip";
+import { TransferRow } from "@/components/app/transfer-row";
 import { BlockSkeleton, ErrorState } from "@/components/app/states";
 
 const LEGEND: HspStatus[] = ["ACCEPT", "SETTLED", "UNSIGNED", "REJECT"];
@@ -73,23 +73,14 @@ export default function BatchDetailPage() {
           <Panel title="Net transfers" description="Direct wallet-to-wallet transferFrom, each wrapped as one HSP payment bound to this batch" bodyClassName="p-0 sm:p-0">
             <ul className="divide-y">
               {b.netTransfers.map((t) => (
-                <li key={`${t.from}-${t.to}`} className="px-4 py-3.5 sm:px-5">
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                    <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
-                      <Address address={t.from} explorer={false} />
-                      <ArrowRight className="size-3.5 text-subtle" aria-label="to" />
-                      <Address address={t.to} explorer={false} />
-                    </span>
-                    <Money atomic={t.amount} className="font-semibold" />
-                    <HspChip status={t.hsp?.status} />
-                  </div>
+                <TransferRow key={`${t.from}-${t.to}`} from={t.from} to={t.to} amount={t.amount} status={t.hsp?.status ?? null} className="sm:px-5">
                   {t.hsp?.reason && <p className="mt-2 text-[0.8125rem] text-muted-foreground">{t.hsp.reason}</p>}
                   {t.hsp?.paymentId && (
                     <p className="mt-1.5 text-xs text-subtle">
                       HSP payment <Hash value={t.hsp.paymentId} />
                     </p>
                   )}
-                </li>
+                </TransferRow>
               ))}
             </ul>
           </Panel>

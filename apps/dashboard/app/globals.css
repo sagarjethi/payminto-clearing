@@ -47,6 +47,12 @@
   --flow-4: #b2601a;
   --flow-5: #b23a78;
   --flow-node: #0e1726;
+
+  --chart-bar: #2443b8;
+  --chart-line: #2443b8;
+  --chart-grid: #e1e4ea;
+  --chart-axis: #8a93a3;
+  --chart-cursor: #eef0f3;
 }
 
 .dark {
@@ -85,6 +91,12 @@
   --flow-4: #c97a36;
   --flow-5: #d0609a;
   --flow-node: #e6eaf0;
+
+  --chart-bar: #7088ea;
+  --chart-line: #8ea2f5;
+  --chart-grid: #222d3d;
+  --chart-axis: #6d788b;
+  --chart-cursor: #182231;
 }
 
 @theme inline {

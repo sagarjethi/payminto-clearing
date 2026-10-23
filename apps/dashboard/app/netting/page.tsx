@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Check, CircleDashed, Loader2, Waypoints } from "lucide-react";
+import { Check, CircleDashed, Loader2, Waypoints } from "lucide-react";
 import { toast } from "sonner";
 import { useApi } from "@/lib/session";
 import { useLive } from "@/lib/live";
@@ -15,9 +15,9 @@ import type { NettingPreview } from "@/lib/schemas";
 import { ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { FlowGraph } from "@/components/app/flow-graph";
-import { Address, Hash, Money, PageHeader, Panel } from "@/components/app/primitives";
-import { HspChip } from "@/components/app/status";
+import { Hash, Money, PageHeader, Panel } from "@/components/app/primitives";
 import { StatStrip } from "@/components/app/stat-strip";
+import { TransferRow } from "@/components/app/transfer-row";
 import { BlockSkeleton, EmptyState, ErrorState } from "@/components/app/states";
 
 type Phase = "idle" | "settling" | "done" | "failed";
@@ -106,7 +106,7 @@ export default function NettingPage() {
       />
 
       {preview.isPending && phase === "idle" ? (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
           <BlockSkeleton className="h-[26rem]" />
           <BlockSkeleton className="h-[26rem]" />
         </div>
@@ -129,7 +129,7 @@ export default function NettingPage() {
       ) : (
         <>
           <Summary preview={shown} />
-          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
             <Panel
               title="Gross obligations"
               description={`${formatInt(shown.calls ?? 0)} calls since the last batch, grouped by payer and payee`}
@@ -159,24 +159,17 @@ export default function NettingPage() {
                 <>
                   <ul className="divide-y rounded-lg border">
                     {shown.net.map((t, i) => (
-                      <li key={`${t.from}-${t.to}`} className="flex items-center gap-3 px-3.5 py-3">
-                        <span className="num flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">
-                          {stepIndex >= 3 ? <Check className="size-3.5 text-positive" /> : i + 1}
-                        </span>
-                        <div className="min-w-0 flex-1 text-sm">
-                          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">
-                            <span className="font-medium">{nameOf(t.from) ?? "Payer"}</span>
-                            <ArrowRight className="size-3.5 shrink-0 text-subtle" aria-label="pays" />
-                            <span className="font-medium">{nameOf(t.to) ?? "Payee"}</span>
-                          </div>
-                          <div className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-subtle max-sm:hidden">
-                            <Address address={t.from} showName={false} copy={false} explorer={false} />
-                            <span aria-hidden>to</span>
-                            <Address address={t.to} showName={false} copy={false} explorer={false} />
-                          </div>
-                        </div>
-                        <Money atomic={t.amount} className="text-[0.9375rem] font-semibold" />
-                      </li>
+                      <TransferRow
+                        key={`${t.from}-${t.to}`}
+                        from={t.from}
+                        to={t.to}
+                        amount={t.amount}
+                        marker={
+                          <span className="num flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">
+                            {stepIndex >= 3 ? <Check className="size-3.5 text-positive" /> : i + 1}
+                          </span>
+                        }
+                      />
                     ))}
                   </ul>
                   {(shown.skipped?.length ?? 0) > 0 && (
@@ -315,11 +308,19 @@ function Progress({ stepIndex, failed, error }: { stepIndex: number; failed: boo
 
 function SettledResult({ batch, snapshot }: { batch: import("@/lib/schemas").BatchDetail; snapshot: NettingPreview }) {
   const token = useToken();
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // On narrow screens the result sits below the graph; bring it into view once it lands.
+    if (window.matchMedia("(max-width: 1279px)").matches) {
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      ref.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+    }
+  }, []);
   const ratio = batch.transfers > 0 ? batch.calls / batch.transfers : 0;
   const gross = BigInt(batch.gross);
   const net = BigInt(batch.net);
   return (
-    <div className="flex flex-col gap-5 animate-in fade-in-0 slide-in-from-bottom-1 duration-500">
+    <div ref={ref} className="flex scroll-mt-20 flex-col gap-5 animate-in fade-in-0 slide-in-from-bottom-1 duration-500">
       <div className="rounded-lg bg-positive-soft px-4 py-4">
         <p className="flex items-center gap-2 text-sm font-medium text-positive">
           <Check className="size-4" /> Batch #{batch.seq} confirmed
@@ -351,19 +352,15 @@ function SettledResult({ batch, snapshot }: { batch: import("@/lib/schemas").Bat
       </dl>
       <ul className="divide-y rounded-lg border">
         {batch.netTransfers.map((t, i) => (
-          <li
+          <TransferRow
             key={`${t.from}-${t.to}`}
-            className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3.5 py-2.5 text-sm animate-in fade-in-0 fill-mode-both"
+            from={t.from}
+            to={t.to}
+            amount={t.amount}
+            status={t.hsp?.status ?? null}
+            className="animate-in fade-in-0 fill-mode-both"
             style={{ animationDelay: `${150 + i * 120}ms` }}
-          >
-            <span className="min-w-0 flex-1">
-              <Address address={t.from} copy={false} explorer={false} nameOnly />
-              <ArrowRight className="mx-1.5 inline size-3.5 text-subtle" aria-label="to" />
-              <Address address={t.to} copy={false} explorer={false} nameOnly />
-            </span>
-            <Money atomic={t.amount} className="font-medium" />
-            <HspChip status={t.hsp?.status} />
-          </li>
+          />
         ))}
       </ul>
       <Button asChild variant="outline">

@@ -110,15 +110,15 @@ function ProviderRow({ p, total }: { p: Provider; total: bigint }) {
           <span className="h-full rounded-l-full bg-positive" style={{ width: `${share(settled)}%` }} />
           <span className="h-full bg-warning" style={{ width: `${share(pending)}%` }} />
         </div>
-        <div className="mt-2 flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1.5">
             <span className="size-2 rounded-full bg-positive" /> Settled <Money atomic={settled} maxFraction={4} className="text-foreground" />
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="size-2 rounded-full bg-warning" /> Pending <Money atomic={pending} maxFraction={4} className="text-foreground" />
           </span>
-          <span className="num">{formatInt(p.calls24h)} calls in 24h</span>
         </div>
+        <p className="num mt-1 text-xs text-subtle">{formatInt(p.calls24h)} calls in the last 24h</p>
       </div>
     </li>
   );

@@ -35,7 +35,26 @@ export default function BatchesPage() {
             Settle accepted calls from the Netting screen, or let the node settle on its interval.
           </EmptyState>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          <ul className="divide-y md:hidden">
+            {batches.data.map((b) => (
+              <li key={b.id}>
+                <Link href={`/batches/${b.id}`} className="block px-4 py-3.5 hover:bg-muted/40">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium">Batch #{b.seq}</span>
+                    <BatchStatusChip status={b.status} />
+                  </div>
+                  <p className="mt-1.5 text-sm text-muted-foreground">
+                    <span className="num">{formatInt(b.calls)}</span> calls, <Money atomic={b.gross} maxFraction={4} /> gross, <Money atomic={b.net} maxFraction={4} /> moved
+                  </p>
+                  <p className="mt-0.5 text-xs text-subtle">
+                    <span className="num">{formatRatio(b.transfers ? b.calls / b.transfers : 0)}</span> calls per transfer, {timeAgo(b.confirmedAt ?? b.createdAt)}
+                  </p>
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <div className="overflow-x-auto max-md:hidden">
             <table className="w-full min-w-[52rem] text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
@@ -75,6 +94,7 @@ export default function BatchesPage() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Panel>
     </>

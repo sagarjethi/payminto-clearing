@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BookOpenCheck, CheckCircle2, XCircle } from "lucide-react";
+import { BookOpenCheck, CheckCircle2, Loader2, XCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useDirectory, useLedger, useTrialBalance } from "@/lib/queries";
 import { formatDateTime, shortAddress } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -9,6 +10,10 @@ import type { LedgerEntry } from "@/lib/schemas";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Money, PageHeader, Panel } from "@/components/app/primitives";
 import { EmptyState, ErrorState, RowsSkeleton } from "@/components/app/states";
+
+/** Entries per step; the node caps one request at 1000. */
+const LEDGER_PAGE = 200;
+const LEDGER_MAX = 1000;
 
 const KIND_LABEL: Record<string, string> = { payable: "payable", receivable: "receivable", wallet: "wallet" };
 
@@ -24,7 +29,8 @@ function useAccountName() {
 export default function LedgerPage() {
   const [account, setAccount] = useState<string>("all");
   const tb = useTrialBalance();
-  const ledger = useLedger(account === "all" ? undefined : account);
+  const [limit, setLimit] = useState(LEDGER_PAGE);
+  const ledger = useLedger(account === "all" ? undefined : account, limit);
   const nameOf = useAccountName();
 
   const journals = useMemo(() => {
@@ -34,7 +40,9 @@ export default function LedgerPage() {
       list.push(e);
       map.set(e.journalId, list);
     }
-    return [...map.entries()].slice(0, 40);
+    // Debits first within each journal, the accounting convention, whatever order the node returns.
+    const isDebit = (e: LedgerEntry) => BigInt(e.debit) > 0n;
+    return [...map.entries()].map(([id, lines]) => [id, [...lines].sort((a, b) => Number(isDebit(b)) - Number(isDebit(a)))] as const);
   }, [ledger.data]);
 
   return (
@@ -43,7 +51,7 @@ export default function LedgerPage() {
         title="Ledger"
         description="Double-entry books for every call and settlement. Accepting a call books a receivable against a payable; settling clears them and records the net wallet moves."
       />
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
         <Panel title="Trial balance" description="Every journal balances, so the books always sum to zero" bodyClassName="p-0 sm:p-0" className="h-fit">
           {tb.isPending ? (
             <RowsSkeleton className="px-5" rows={6} />
@@ -64,13 +72,13 @@ export default function LedgerPage() {
                 </div>
               </div>
               <div className="mt-3 overflow-x-auto">
-                <table className="w-full min-w-[30rem] text-sm">
+                <table className="w-full text-sm sm:min-w-[26rem]">
                   <thead>
                     <tr className="border-b text-left text-xs text-muted-foreground">
-                      <th className="px-5 py-2.5 font-normal">Account</th>
-                      <th className="px-3 py-2.5 text-right font-normal">Debit</th>
-                      <th className="px-3 py-2.5 text-right font-normal">Credit</th>
-                      <th className="px-5 py-2.5 text-right font-normal">Balance</th>
+                      <th className="py-2.5 pr-2 pl-5 font-normal">Account</th>
+                      <th className="px-2 py-2.5 text-right font-normal max-sm:hidden">Debit</th>
+                      <th className="px-2 py-2.5 text-right font-normal max-sm:hidden">Credit</th>
+                      <th className="py-2.5 pr-5 pl-2 text-right font-normal">Balance</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -78,22 +86,23 @@ export default function LedgerPage() {
                       const n = nameOf(a.account);
                       return (
                         <tr key={a.account}>
-                          <td className="px-5 py-2.5 whitespace-nowrap">
-                            <span className="font-medium">{n.who}</span> <span className="text-muted-foreground">{n.kind}</span>
+                          <td className="py-2.5 pr-2 pl-5">
+                            <span className="block font-medium">{n.who}</span>
+                            <span className="block text-xs text-muted-foreground">{n.kind}</span>
                           </td>
-                          <td className="px-3 py-2.5 text-right text-muted-foreground"><Money atomic={a.debit} maxFraction={4} /></td>
-                          <td className="px-3 py-2.5 text-right text-muted-foreground"><Money atomic={a.credit} maxFraction={4} /></td>
-                          <td className="px-5 py-2.5 text-right font-medium"><Money atomic={a.balance} maxFraction={4} /></td>
+                          <td className="px-2 py-2.5 text-right text-muted-foreground max-sm:hidden"><Money atomic={a.debit} maxFraction={4} /></td>
+                          <td className="px-2 py-2.5 text-right text-muted-foreground max-sm:hidden"><Money atomic={a.credit} maxFraction={4} /></td>
+                          <td className="py-2.5 pr-5 pl-2 text-right font-medium"><Money atomic={a.balance} maxFraction={4} /></td>
                         </tr>
                       );
                     })}
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 font-semibold">
-                      <td className="px-5 py-3">Total</td>
-                      <td className="px-3 py-3 text-right"><Money atomic={tb.data.totalDebit} maxFraction={4} /></td>
-                      <td className="px-3 py-3 text-right"><Money atomic={tb.data.totalCredit} maxFraction={4} /></td>
-                      <td className="px-5 py-3 text-right"><Money atomic={tb.data.balance} /></td>
+                      <td className="py-3 pr-2 pl-5">Total</td>
+                      <td className="px-2 py-3 text-right max-sm:hidden"><Money atomic={tb.data.totalDebit} maxFraction={4} /></td>
+                      <td className="px-2 py-3 text-right max-sm:hidden"><Money atomic={tb.data.totalCredit} maxFraction={4} /></td>
+                      <td className="py-3 pr-5 pl-2 text-right"><Money atomic={tb.data.balance} /></td>
                     </tr>
                   </tfoot>
                 </table>
@@ -106,7 +115,13 @@ export default function LedgerPage() {
           title="Journal"
           description="Newest first"
           actions={
-            <Select value={account} onValueChange={setAccount}>
+            <Select
+              value={account}
+              onValueChange={(v) => {
+                setAccount(v);
+                setLimit(LEDGER_PAGE);
+              }}
+            >
               <SelectTrigger size="sm" className="w-[13.5rem] max-w-full" aria-label="Filter by account">
                 <SelectValue />
               </SelectTrigger>
@@ -161,6 +176,13 @@ export default function LedgerPage() {
                 </li>
               ))}
             </ul>
+          )}
+          {ledger.data && ledger.data.length >= limit && limit < LEDGER_MAX && (
+            <div className="border-t px-4 py-3 sm:px-5">
+              <Button variant="outline" size="sm" className="w-full" onClick={() => setLimit((l) => Math.min(LEDGER_MAX, l + LEDGER_PAGE))} disabled={ledger.isFetching}>
+                {ledger.isFetching && <Loader2 className="animate-spin" />} Show older entries
+              </Button>
+            </div>
           )}
         </Panel>
       </div>

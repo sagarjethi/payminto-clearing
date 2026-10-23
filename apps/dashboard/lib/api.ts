@@ -104,6 +104,8 @@ export interface ClearingApi {
   eventsUrl(): string | null;
   /** In-process event source (mock mode). Live nodes use `eventsUrl` with EventSource instead. */
   subscribe?(listener: (e: NodeEvent) => void): () => void;
+  /** Mock mode only: stands in for an on-chain approve so the wallet panel can be demoed. */
+  mockApprove?(mandateId: string, amount: string): Promise<void>;
 }
 
 function qs(params: Record<string, string | number | undefined>): string {

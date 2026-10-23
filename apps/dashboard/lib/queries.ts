@@ -1,11 +1,11 @@
 "use client";
 
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { explorerAddress, explorerTx } from "@payminto/protocol";
 import { useApi } from "./session";
 import type { CallsQuery } from "./api";
-import type { Info } from "./schemas";
+import type { Call, Info } from "./schemas";
 
 export const qk = {
   info: ["info"] as const,
@@ -19,7 +19,7 @@ export const qk = {
   batches: ["batches"] as const,
   batch: (id: string) => ["batches", id] as const,
   preview: ["netting-preview"] as const,
-  ledger: (account?: string) => ["ledger", account ?? "all"] as const,
+  ledger: (account?: string, limit = 200) => ["ledger", account ?? "all", limit] as const,
   trialBalance: ["trial-balance"] as const,
   proof: (id: string) => ["proof", id] as const,
 };
@@ -59,6 +59,31 @@ export function useCalls(q: CallsQuery = {}) {
   return useQuery({ queryKey: qk.calls(q), queryFn: () => api.calls(q) });
 }
 
+/** Cursor-paged calls for "Load more" lists; pages follow the node's nextCursor. */
+export function useCallPages(q: Omit<CallsQuery, "cursor">) {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: ["calls", "pages", q],
+    queryFn: ({ pageParam }) => api.calls({ ...q, cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+}
+
+/** Flattens loaded pages, dropping repeats when new calls shift a page boundary between fetches. */
+export function flattenCallPages(pages: { items: Call[] }[] | undefined): Call[] {
+  const seen = new Set<string>();
+  const out: Call[] = [];
+  for (const p of pages ?? []) {
+    for (const c of p.items) {
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
 export function useDenials() {
   const api = useApi();
   return useQuery({ queryKey: qk.denials, queryFn: () => api.denials(100) });
@@ -79,9 +104,9 @@ export function useNettingPreview() {
   return useQuery({ queryKey: qk.preview, queryFn: () => api.nettingPreview() });
 }
 
-export function useLedger(account?: string) {
+export function useLedger(account?: string, limit = 200) {
   const api = useApi();
-  return useQuery({ queryKey: qk.ledger(account), queryFn: () => api.ledger({ account, limit: 200 }) });
+  return useQuery({ queryKey: qk.ledger(account, limit), queryFn: () => api.ledger({ account, limit }), placeholderData: (prev) => prev });
 }
 
 export function useTrialBalance() {
