@@ -140,6 +140,7 @@ Public:
 - `GET /v1/info` -> network, hub, token `{ address, symbol, decimals }`, explorer base, node operator address, version.
 - `GET /v1/providers` -> public catalog `[{ id, name, description, payee, priceAtomic, resource, category, calls24h }]`.
 - `GET /v1/mandates/:id/position?payee=0x..` -> `{ mandateId, payee, cumulative, settled }` (agents use this to sign the next voucher).
+- `GET /v1/mandates/:id/policy` -> `{ id, status, mandate: MandateJson, policy, payees }`, so agents can enforce their own policy before signing (they verify `policyHash` and `payeesRoot` against the mandate).
 - `GET /v1/receipts/:callId/proof` -> `{ receipt, batchId, receiptsRoot, proof, leaf, txHash, explorerUrl, onchainVerified? }` (`onchainVerified` computed by calling `verifyReceipt`).
 - `GET /v1/agents/:address/cosign` -> pending HSP mandates to sign `[{ hspPaymentId, typedData }]` (typed data JSON-safe: bigints as strings).
 - `POST /v1/cosign/:hspPaymentId` `{ signerProof }`.
@@ -244,6 +245,8 @@ export default { fetch: pay.wrap(handler) };       // any fetch handler
 ```
 
 Agent `fetch` behaviour: on 402 with a `payminto-voucher` requirement, read position from the node, sign `cumulative = position + amount`, retry once with `PAYMENT-SIGNATURE`; on `STALE_CUMULATIVE` refresh and retry up to 3 times with jitter; serialize vouchers per (mandate, payee) inside the client to avoid self-races.
+Policy is enforced twice: by the agent before signing and by the node before accepting; total cap, allowlist and expiry a third time on chain.
+`AgentClient` checks MANDATE_NOT_ACTIVE, TOKEN_MISMATCH, PAYEE_NOT_ALLOWED, PER_CALL_CAP, RATE_LIMIT, DAILY_CAP and TOTAL_CAP before signing, using a policy verified against the mandate, and a refused call emits `denied` with that rule and produces no signature.
 The agent co-sign loop must refuse to sign an HSP mandate whose amount exceeds what its own accepted receipts justify for that batch (defence against a malicious node).
 
 ## 7. MCP server (`apps/mcp`)
