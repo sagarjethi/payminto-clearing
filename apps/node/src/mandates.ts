@@ -24,6 +24,9 @@ import type { EventBus } from "./events.ts";
 import type { Logger } from "./logger.ts";
 import { nowIso, type MandateRow, type Store } from "./store.ts";
 
+const MAX_UINT64 = 2n ** 64n - 1n;
+const EXPIRY_GRACE = 3n * 86_400n;
+
 export type CreateMandateInput = {
   mandate: Mandate;
   ownerSignature: Hex;
@@ -73,6 +76,8 @@ export class MandateService {
       throw new ApiError(400, "INVALID_MANDATE", "totalCap must be positive and validUntil after validAfter");
     }
     if (m.validUntil <= BigInt(Math.floor(Date.now() / 1000))) throw new ApiError(400, "INVALID_MANDATE", "mandate already expired");
+    // The hub stores validity as uint64 and rejects mandates whose expiry grace would overflow.
+    if (m.validUntil > MAX_UINT64 - EXPIRY_GRACE) throw new ApiError(400, "INVALID_MANDATE", "validUntil is too far in the future");
 
     const existing = this.#store.mandate(id);
     if (existing && existing.status !== "pending") return existing;

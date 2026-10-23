@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
@@ -184,6 +185,14 @@ export function createApi(s: NodeServices): Hono<Vars> {
       allowMethods: ["GET", "POST", "OPTIONS"],
       allowHeaders: ["Authorization", "Content-Type", "Last-Event-ID"],
       maxAge: 600,
+    }),
+  );
+
+  app.use(
+    "*",
+    bodyLimit({
+      maxSize: 512 * 1024,
+      onError: (c) => c.json({ error: { code: "PAYLOAD_TOO_LARGE", message: "request body exceeds 512 KiB" } }, 413),
     }),
   );
 
