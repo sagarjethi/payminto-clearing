@@ -119,8 +119,9 @@ We would not route production volume through it before an independent audit, whi
 
 ### 14. Do the gas economics actually work on HashKey Chain?
 
-On the day we measured, HashKey Chain's base fee was 500 gwei, and a single stablecoin settlement was measured by a third party at about 246,000 gas, roughly 0.12 HSK or about one US cent.
-A 0.002 USDC call settled alone pays about five times its price in gas.
+We measured it (docs/GAS.md): one ERC-20 transfer is about 34,000 gas, so 640 calls paid one by one need 22.04M gas.
+One netted settleBatch cleared the same 640 calls for about 1.91M gas, 11.6x less, about 3,000 gas per call.
+At the 500 gwei base fee we observed, a per-call transfer costs about 0.017 HSK, which rivals a 0.002 USDC call price.
 Our mainnet batch settled `<N_CALLS>` calls with `<SETTLE_GAS_USED>` gas, about `<GAS_PER_CALL>` gas per call, and moved money in `<N_TRANSFERS>` transfers.
 Gas is paid by the node operator, not the agent, so every voucher is gas-free.
 

@@ -55,9 +55,9 @@ If the slot allows a separate demo, run the full `docs/DEMO_SCRIPT.md` instead a
 
 ### A. Hook (0:00 - 0:25) - slides 1 and 2
 
-> On HashKey Chain today, one stablecoin transfer costs about one cent in gas.
+> On HashKey Chain, one stablecoin transfer costs about 34 thousand gas.
 > An AI agent buying a market quote pays two tenths of a cent.
-> So if you settle every call on chain, the gas is five times the price.
+> Settle every call on chain and the gas rivals the price of the call itself.
 > That is why nobody prices an agent call at a fraction of a cent.
 > And that is the whole agent economy HashKey is betting on.
 > I'm Sagar, I build Payminto, an open-source payment gateway you run on your own servers.
@@ -149,13 +149,13 @@ the netting graph from the dashboard, many thin edges collapsing into three bold
 
 Copy:
 - **One agent call: 0.002 USDC.**
-- **Settling it on chain: about 0.01 USD in gas.**
+- **Settling it on chain: about 34,000 gas, 0.017 HSK at 500 gwei.**
 - Per-call settlement costs more than the thing being bought.
 - And nobody hands an autonomous agent an open wallet.
 
 Visual:
-two bars side by side, "price of the call" tiny, "gas to settle it" five times taller.
-Footnote: "HashKey Chain base fee 500 gwei, measured 2026-10-24; ~246k gas per stablecoin settlement, third-party measurement."
+two bars side by side: "640 calls, one transfer each: 22.04M gas" and "640 calls, cleared in one batch: 1.91M gas".
+Footnote: "Measured with our ClearingHub, see docs/GAS.md; base fee 500 gwei observed 2026-10-24."
 
 ### Slide 3 - Insight
 

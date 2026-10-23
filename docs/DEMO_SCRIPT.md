@@ -97,7 +97,7 @@ Upload unlisted to YouTube and paste the link in `docs/SUBMISSION.md`.
 | # | Time | Shot | On screen | Voiceover |
 |---|---|---|---|---|
 | 1 | 0:00-0:08 | Title card | "Payminto Clearing - clearing for AI agents on HashKey Chain" | "Agents are starting to pay each other. Per call, for fractions of a cent." |
-| 2 | 0:08-0:20 | Problem card | Two bars: 0.002 USDC call vs ~0.01 USD gas | "On HashKey Chain, settling one call on chain costs about five times the call. So we don't settle calls. We clear them." |
+| 2 | 0:08-0:20 | Problem card | Two bars: 22.04M gas one-by-one vs 1.91M gas cleared | "Paying every call on chain costs as much gas as the call is worth. So we don't settle calls. We clear them: 11.6x less gas, and zero for the agent." |
 | 3 | 0:20-0:32 | Dashboard, mandate detail | Treasury Agent mandate, caps highlighted | "An owner signs one mandate. Total, per call, per day, allowed payees, expiry. It's enforced on chain." |
 | 4 | 0:32-0:47 | Overview, live stream | Calls climbing, gas 0 | "Agents pay per call with signed vouchers. Five hundred calls. Zero gas." |
 | 5 | 0:47-1:00 | Denial detail, zoom on rule | `PAYEE_NOT_ALLOWED` | "A prompt-injected agent tries to pay a stranger. Denied, with the rule that stopped it." |

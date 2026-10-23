@@ -38,8 +38,9 @@ Self-hosted, non-custodial, every call provable on chain.
 
 AI agents are starting to buy things from each other: a quote, a risk score, a research brief, a tool call.
 Those calls are worth fractions of a cent each.
-On HashKey Chain today the base fee sits at 500 gwei, and a single stablecoin settlement transaction was measured at roughly 246,000 gas, which is about 0.12 HSK, or around one US cent.
-So settling a 0.002 USDC API call on chain costs about five times the price of the call.
+A single stablecoin transfer costs about 34,000 gas, which at HashKey Chain's 500 gwei base fee is about 0.017 HSK (`<HSK_USD>` USD at submission time).
+For a 0.002 USDC API call that fee is the same order as the price itself, so paying per call on chain does not work.
+In our measured run, one netted batch cleared 640 calls for 1.91M gas, versus 22.04M gas for one transfer per call: 11.6x less gas, and the agent pays none of it (see docs/GAS.md).
 Per-call settlement does not work for the agent economy, on any chain with a real fee floor.
 
 The second problem is trust.
