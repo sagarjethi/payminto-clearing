@@ -8,6 +8,9 @@
     "build": "pnpm -r --filter ./packages/** build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "contracts:test": "cd contracts && forge test"
+    "contracts:test": "cd contracts && forge test",
+    "demo": "pnpm --filter @payminto/demo demo",
+    "demo:stage": "pnpm --filter @payminto/demo demo:stage",
+    "mcp": "pnpm --filter @payminto/mcp start"
   }
 }
