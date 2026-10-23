@@ -23,6 +23,7 @@ import {
   proofSchema,
   providerCreatedSchema,
   providerSchema,
+  revokeResultSchema,
   settlementResultSchema,
   trialBalanceSchema,
   type Batch,
@@ -38,6 +39,7 @@ import {
   type Overview,
   type Provider,
   type ReceiptProof,
+  type RevokeResult,
   type SettlementResult,
   type TrialBalance,
   type NodeEvent,
@@ -86,7 +88,7 @@ export interface ClearingApi {
   mandates(): Promise<MandateRecord[]>;
   mandate(id: string): Promise<MandateDetail>;
   createMandate(body: CreateMandateBody): Promise<MandateRecord>;
-  revokeMandate(id: string): Promise<MandateRecord>;
+  revokeMandate(id: string): Promise<RevokeResult>;
   providers(): Promise<Provider[]>;
   provider(id: string): Promise<Provider>;
   createProvider(body: CreateProviderBody): Promise<{ id: string; apiKey: string }>;
@@ -137,7 +139,7 @@ export class HttpClearingApi implements ClearingApi {
     this.token = token;
   }
 
-  private async request<T>(path: string, schema: z.ZodType<T>, init: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, schema: z.ZodType<T>, init: RequestInit = {}, okStatuses: number[] = []): Promise<T> {
     let res: Response;
     try {
       res = await fetch(`${this.nodeUrl}${path}`, {
@@ -162,7 +164,7 @@ export class HttpClearingApi implements ClearingApi {
         throw new ApiError(res.status, "BAD_RESPONSE", `The node returned a non-JSON response for ${path}.`);
       }
     }
-    if (!res.ok) {
+    if (!res.ok && !okStatuses.includes(res.status)) {
       const err = apiErrorSchema.safeParse(json);
       if (err.success) throw new ApiError(res.status, err.data.error.code, err.data.error.message, err.data.error.details);
       if (res.status === 401 || res.status === 403) throw new ApiError(res.status, "UNAUTHORIZED", "The admin token was rejected by the node.");
@@ -179,7 +181,8 @@ export class HttpClearingApi implements ClearingApi {
   }
 
   health() {
-    return this.request("/healthz", healthSchema);
+    // 503 still carries the health body (ok: false), which is exactly what the console wants to show.
+    return this.request("/healthz", healthSchema, {}, [503]);
   }
   info() {
     return this.request("/v1/info", infoSchema);
@@ -197,10 +200,13 @@ export class HttpClearingApi implements ClearingApi {
     return this.request("/v1/mandates", oneOf(mandateSchema, "mandate"), { method: "POST", body: JSON.stringify(body) });
   }
   revokeMandate(id: string) {
-    return this.request(`/v1/mandates/${id}/revoke`, oneOf(mandateSchema, "mandate"), { method: "POST", body: "{}" });
+    return this.request(`/v1/mandates/${id}/revoke`, revokeResultSchema, { method: "POST", body: "{}" });
   }
-  providers() {
-    return this.request("/v1/providers", listOf(providerSchema, "providers"));
+  async providers() {
+    const list = await this.request("/v1/providers", listOf(providerSchema, "providers"));
+    // The public catalog has no revenue; the admin detail route does. A node clears a handful of providers, so fan out.
+    const details = await Promise.all(list.map((p) => this.provider(p.id).catch(() => null)));
+    return list.map((p, i) => ({ ...p, revenue: details[i]?.revenue ?? p.revenue, callsTotal: details[i]?.callsTotal ?? p.callsTotal }));
   }
   provider(id: string) {
     return this.request(`/v1/providers/${id}`, oneOf(providerSchema, "provider"));

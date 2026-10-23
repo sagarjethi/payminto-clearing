@@ -117,6 +117,8 @@ export type FlowLayoutOptions = {
   gap?: number;
   minBand?: number;
   padY?: number;
+  /** Vertical room each node keeps for its label, even when its flow is tiny. */
+  minSlot?: number;
 };
 
 /**
@@ -145,28 +147,33 @@ export function layoutFlow(obligations: readonly Obligation[], opts: FlowLayoutO
 
   const grand = [...payerTotals.values()].reduce((a, b) => a + b, 0n);
   const maxCount = Math.max(payers.length, payees.length, 1);
-  const height = opts.height ?? Math.max(260, maxCount * 92 + padY * 2);
-  const usable = height - padY * 2 - gap * (maxCount - 1);
+  const minSlot = opts.minSlot ?? 46;
+  const baseHeight = opts.height ?? Math.max(260, maxCount * 92 + padY * 2);
+  const usable = baseHeight - padY * 2 - gap * (maxCount - 1);
   const scale = grand > 0n ? usable / Number(grand) : 0;
   const minNode = 14;
+  const heightsOf = (list: [string, bigint][]) => list.map(([, t]) => Math.max(minNode, Number(t) * scale));
+  // Each node sits centred in a slot tall enough for its label, so small parties never overlap.
+  const sideTotal = (hs: number[]) => hs.reduce((a, h) => a + Math.max(h, minSlot), 0) + gap * Math.max(0, hs.length - 1);
+  const height = Math.max(baseHeight, sideTotal(heightsOf(payers)) + padY * 2, sideTotal(heightsOf(payees)) + padY * 2);
 
   const place = (list: [string, bigint][], side: "payer" | "payee"): FlowNode[] => {
-    const heights = list.map(([, t]) => Math.max(minNode, Number(t) * scale));
-    const total = heights.reduce((a, b) => a + b, 0) + gap * Math.max(0, list.length - 1);
-    let y = padY + Math.max(0, (height - padY * 2 - total) / 2);
+    const heights = heightsOf(list);
+    let y = padY + Math.max(0, (height - padY * 2 - sideTotal(heights)) / 2);
     return list.map(([address, t], i) => {
       const h = heights[i] ?? minNode;
+      const slot = Math.max(h, minSlot);
       const node: FlowNode = {
         id: `${side}:${address}`,
         address,
         side,
         total: t,
         x: side === "payer" ? 0 : width - nodeWidth,
-        y,
+        y: y + (slot - h) / 2,
         height: h,
         dual: side === "payer" ? payeeTotals.has(address) : payerTotals.has(address),
       };
-      y += h + gap;
+      y += slot + gap;
       return node;
     });
   };

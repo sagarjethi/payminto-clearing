@@ -36,7 +36,8 @@ export const healthSchema = z.object({
   hub: addressSchema,
   token: z.union([addressSchema, tokenSchema]),
   operator: addressSchema,
-  blockNumber: z.union([z.number(), z.string()]).transform((v) => Number(v)),
+  /** Null when the node cannot reach its RPC (the node then answers 503). */
+  blockNumber: z.union([z.number(), z.string(), z.null()]).transform((v) => (v === null ? null : Number(v))),
   hspMode: z.string(),
 });
 export type Health = z.infer<typeof healthSchema>;
@@ -138,6 +139,11 @@ export type MandateRecord = z.infer<typeof mandateSchema>;
 export const mandateDetailSchema = mandateSchema.extend({
   recentCalls: z.array(callSchema).default([]),
   denials: z.array(denialSchema).default([]),
+  /** The hub's view of the mandate, when the node could read it. */
+  onchain: z
+    .object({ open: z.boolean(), revokedAt: z.number().nullable().optional(), spent: atomicSchema.optional() })
+    .nullable()
+    .optional(),
   /** Daily spend buckets for the chart; optional because the SPEC does not pin it. */
   spendSeries: z.array(z.object({ day: z.string(), amount: atomicSchema })).optional(),
 });
@@ -199,7 +205,7 @@ export const batchSchema = z.object({
   id: bytes32Schema,
   seq: z.number(),
   status: batchStatusSchema,
-  receiptsRoot: bytes32Schema,
+  receiptsRoot: bytes32Schema.nullable(),
   token: addressSchema,
   txHash: hex.nullable().optional(),
   explorerUrl: z.string().nullable().optional(),
@@ -288,6 +294,8 @@ export type ReceiptProof = z.infer<typeof proofSchema>;
 export const ledgerEntrySchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String),
   journalId: z.union([z.string(), z.number()]).transform(String),
+  /** Journal kind, e.g. call.accepted or batch.settled, when the node reports it. */
+  kind: z.string().nullable().optional(),
   account: z.string(),
   debit: atomicSchema,
   credit: atomicSchema,
@@ -341,3 +349,20 @@ export const EVENT_TYPES: readonly EventType[] = [
 ];
 
 export type NodeEvent = { type: EventType; id: string; at: string; data: Record<string, unknown> };
+
+export const revokeResultSchema = z.union([
+  z.object({
+    mandate: mandateSchema,
+    onchain: z
+      .object({
+        revoked: z.boolean(),
+        submitted: z.boolean().optional(),
+        txHash: hex.nullable().optional(),
+        call: z.object({ to: addressSchema, data: hex, allowedSenders: z.array(addressSchema).optional() }).nullable().optional(),
+      })
+      .nullable()
+      .optional(),
+  }),
+  mandateSchema.transform((mandate) => ({ mandate, onchain: null })),
+]);
+export type RevokeResult = z.infer<typeof revokeResultSchema>;

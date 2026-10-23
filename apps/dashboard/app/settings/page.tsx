@@ -75,7 +75,7 @@ export default function SettingsPage() {
               <Field label="Chain">
                 {d.network.name} <span className="text-muted-foreground">({chainId})</span>
               </Field>
-              <Field label="Latest block"><span className="num">{health.data ? formatInt(health.data.blockNumber) : "-"}</span></Field>
+              <Field label="Latest block"><span className="num">{health.data?.blockNumber != null ? formatInt(health.data.blockNumber) : "-"}</span></Field>
               <Field label="Explorer">
                 {d.explorer ? (
                   <a href={d.explorer} target="_blank" rel="noreferrer" className="hash break-all text-primary hover:underline">

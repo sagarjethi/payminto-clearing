@@ -138,7 +138,7 @@ export default function LedgerPage() {
               {journals.map(([id, lines]) => (
                 <li key={id} className="px-4 py-3 sm:px-5">
                   <div className="flex items-baseline justify-between gap-3">
-                    <p className="min-w-0 truncate text-sm font-medium">{lines[0]?.memo ?? "Journal"}</p>
+                    <p className="min-w-0 truncate text-sm font-medium">{journalTitle(lines)}</p>
                     <time className="num shrink-0 text-xs text-subtle">{lines[0] ? formatDateTime(lines[0].createdAt) : ""}</time>
                   </div>
                   <table className="mt-1.5 w-full text-[0.8125rem]">
@@ -166,4 +166,20 @@ export default function LedgerPage() {
       </div>
     </>
   );
+}
+
+const KIND_TITLE: Record<string, string> = {
+  "call.accepted": "Call accepted",
+  "batch.settled": "Batch settled",
+  refund: "Refund",
+};
+
+/** "Call accepted (Market Data)" from a live node's kind and memo, or the memo itself from older shapes. */
+function journalTitle(lines: LedgerEntry[]): string {
+  const first = lines[0];
+  if (!first) return "Journal";
+  const base = first.kind ? KIND_TITLE[first.kind] : undefined;
+  if (!base) return first.memo ?? "Journal";
+  if (first.kind === "call.accepted" && first.memo?.startsWith("call ")) return `${base} (${first.memo.slice(5)})`;
+  return base;
 }

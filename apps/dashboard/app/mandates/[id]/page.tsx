@@ -1,10 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { createWalletClient, custom, encodeFunctionData, type Address as Addr, type Hex } from "viem";
+import { clearingHubAbi } from "@payminto/protocol";
+import { hasInjectedWallet } from "@/lib/sign";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, Radio } from "lucide-react";
+import { Ban, Loader2, Radio, Wallet } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
 import { useApi } from "@/lib/session";
@@ -71,11 +74,7 @@ export default function MandateDetailPage() {
         actions={m.status === "open" || m.status === "pending" ? <RevokeButton m={m} /> : null}
       />
 
-      {m.status === "revoked" && (
-        <p className="mb-5 rounded-lg border bg-muted/60 px-4 py-3 text-sm text-muted-foreground">
-          Revoked {m.revokedAt ? timeAgo(m.revokedAt) : ""}. New vouchers are refused. Vouchers already accepted stay settleable on chain for one hour after the revoke.
-        </p>
-      )}
+      {m.status === "revoked" && <RevokedNotice m={m} />}
 
       <StatStrip
         stats={[
@@ -139,8 +138,13 @@ function RevokeButton({ m }: { m: MandateDetail }) {
   const qc = useQueryClient();
   const revoke = useMutation({
     mutationFn: () => api.revokeMandate(m.id),
-    onSuccess: () => {
-      toast.success("Mandate revoked", { description: "New vouchers under this mandate are refused from now on." });
+    onSuccess: (res) => {
+      const needsOwner = res.onchain && !res.onchain.revoked;
+      toast.success("Mandate revoked", {
+        description: needsOwner
+          ? "This node refuses new vouchers now. The owner or agent should also call revokeMandate on ClearingHub."
+          : "New vouchers under this mandate are refused from now on.",
+      });
       void qc.invalidateQueries({ queryKey: qk.mandates });
     },
     onError: (e) => toast.error("Revoke failed", { description: e instanceof ApiError ? e.message : String(e) }),
@@ -161,12 +165,54 @@ function RevokeButton({ m }: { m: MandateDetail }) {
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Keep mandate</AlertDialogCancel>
-          <AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => revoke.mutate()}>
+          <AlertDialogAction variant="destructive" onClick={() => revoke.mutate()}>
             Revoke mandate
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+function RevokedNotice({ m }: { m: MandateDetail }) {
+  const info = useInfo();
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const pendingOnChain = m.onchain?.open === true && m.onchain.revokedAt == null;
+
+  async function revokeOnChain() {
+    if (!info.data || !window.ethereum) return;
+    setBusy(true);
+    try {
+      const wallet = createWalletClient({ transport: custom(window.ethereum) });
+      const [from] = await wallet.requestAddresses();
+      if (!from) throw new Error("The wallet did not share an account.");
+      if (![m.mandate.owner, m.mandate.agent].some((a) => a.toLowerCase() === from.toLowerCase())) {
+        throw new Error("Only the mandate owner or agent can revoke it on chain. Switch to that account.");
+      }
+      const data = encodeFunctionData({ abi: clearingHubAbi, functionName: "revokeMandate", args: [m.id as Hex] });
+      await wallet.sendTransaction({ account: from, to: info.data.hub as Addr, data, chain: null });
+      toast.success("Revoke sent", { description: "The node picks up the on-chain revoke from the MandateRevoked event." });
+      void qc.invalidateQueries({ queryKey: qk.mandate(m.id) });
+    } catch (e) {
+      toast.error("On-chain revoke not sent", { description: e instanceof Error ? (e.message.split("\n")[0] ?? e.message) : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mb-5 flex flex-col gap-3 rounded-lg border bg-muted/60 px-4 py-3 text-sm sm:flex-row sm:items-center">
+      <p className="flex-1 text-muted-foreground">
+        Revoked {m.revokedAt ? timeAgo(m.revokedAt) : ""}. This node refuses new vouchers. Vouchers already accepted stay settleable on chain for one hour after the revoke.
+        {pendingOnChain && " The hub has not recorded the revoke yet; the owner or agent can send it."}
+      </p>
+      {pendingOnChain && hasInjectedWallet() && (
+        <Button variant="outline" size="sm" onClick={() => void revokeOnChain()} disabled={busy}>
+          {busy ? <Loader2 className="animate-spin" /> : <Wallet />} Revoke on chain with wallet
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -206,14 +252,18 @@ function SpendChart({ m }: { m: MandateDetail }) {
     let run = 0n;
     for (const p of m.spendSeries ?? []) {
       run += BigInt(p.amount);
-      out.push({ t: p.day, label: new Date(p.day).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }), value: Number(run) / 10 ** t.decimals, raw: run.toString() });
+      // Live nodes bucket by day (YYYY-MM-DD); the mock buckets by hour (full ISO time).
+      const daily = /^\d{4}-\d{2}-\d{2}$/.test(p.day);
+      const d = new Date(daily ? `${p.day}T00:00:00Z` : p.day);
+      const label = daily ? d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", timeZone: "UTC" }) : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+      out.push({ t: p.day, label, value: Number(run) / 10 ** t.decimals, raw: run.toString() });
     }
     return out;
   }, [m.spendSeries, t.decimals]);
   return (
-    <Panel title="Cumulative spend" description={`${t.symbol}, by hour`}>
-      {data.length < 2 ? (
-        <EmptyState className="py-8" title="Not enough activity to chart">Spend appears here once the agent has made calls across more than an hour.</EmptyState>
+    <Panel title="Cumulative spend" description={`${t.symbol}, ${m.spendSeries?.[0] && /^\d{4}-\d{2}-\d{2}$/.test(m.spendSeries[0].day) ? "by day" : "by hour"}`}>
+      {data.length < 2 || data[data.length - 1]!.raw === "0" ? (
+        <EmptyState className="py-8" title="Nothing spent yet">Spend appears here once the agent has paid for calls under this mandate.</EmptyState>
       ) : (
         <div className="h-52" role="img" aria-label={`Cumulative spend reaching ${formatMoney(data[data.length - 1]!.raw, t.decimals)} ${t.symbol}`}>
           <ResponsiveContainer width="100%" height="100%">
@@ -234,7 +284,7 @@ function SpendChart({ m }: { m: MandateDetail }) {
                   if (!active || !p) return null;
                   return (
                     <div className="rounded-md border bg-popover px-3 py-2 text-xs shadow-sm">
-                      <p className="font-medium">{formatDateTime(p.t)}</p>
+                      <p className="font-medium">{/^\d{4}-\d{2}-\d{2}$/.test(p.t) ? p.label : formatDateTime(p.t)}</p>
                       <p className="num mt-0.5 text-muted-foreground">
                         {formatMoney(p.raw, t.decimals, { maxFraction: 4 })} {t.symbol} spent
                       </p>

@@ -147,7 +147,8 @@ function NetworkPill() {
     <span className="inline-flex h-8 items-center gap-2 rounded-md border bg-card px-2.5 text-xs">
       <span className="font-medium">{info.data.network.name}</span>
       <span className="hidden text-subtle md:inline">chain {chainId}</span>
-      {health.data && <span className="num hidden text-muted-foreground lg:inline">block {formatInt(health.data.blockNumber)}</span>}
+      {health.data?.blockNumber != null && <span className="num hidden text-muted-foreground lg:inline">block {formatInt(health.data.blockNumber)}</span>}
+      {health.data && !health.data.ok && <span className="text-negative">RPC unreachable</span>}
     </span>
   );
 }

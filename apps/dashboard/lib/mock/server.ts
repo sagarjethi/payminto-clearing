@@ -38,6 +38,7 @@ import type {
   Overview,
   Provider,
   ReceiptProof,
+  RevokeResult,
   SettlementResult,
   TrialBalance,
 } from "../schemas";
@@ -606,14 +607,14 @@ export class MockClearingApi implements ClearingApi {
     return mandateView(record);
   }
 
-  async revokeMandate(id: string): Promise<MandateRecord> {
+  async revokeMandate(id: string): Promise<RevokeResult> {
     await delay(500);
     const m = mandates.find((x) => x.id === id);
     if (!m) throw new ApiError(404, "NOT_FOUND", `No mandate ${id} on this node.`);
     m.status = "revoked";
     m.revokedAt = new Date().toISOString();
     emit("mandate.revoked", mandateView(m) as unknown as Record<string, unknown>);
-    return mandateView(m);
+    return { mandate: mandateView(m), onchain: { revoked: true, submitted: true, txHash: hashOf("revoke-tx"), call: null } };
   }
 
   async providers(): Promise<Provider[]> {

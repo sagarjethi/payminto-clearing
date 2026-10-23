@@ -69,13 +69,15 @@ export default function NewMandatePage() {
   const [step, setStep] = useState(0);
   const [f, setF] = useState<Form>(initial);
   const [touched, setTouched] = useState(false);
-  const [signer, setSigner] = useState<"wallet" | "dev" | "mock">(MOCK_MODE ? "mock" : "wallet");
+  const [signerChoice, setSigner] = useState<"wallet" | "dev" | "mock">(MOCK_MODE ? "mock" : "wallet");
   const [devKey, setDevKey] = useState("");
   const [busy, setBusy] = useState<null | "signing" | "submitting">(null);
   const [error, setError] = useState<string | null>(null);
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((x) => ({ ...x, [k]: v }));
   const chainId = chainIdOf(info.data);
+  // Without a browser wallet on the local chain, the development key is the only way to sign.
+  const signer = signerChoice === "wallet" && !hasInjectedWallet() && chainId === 31337 ? "dev" : signerChoice;
   const extra = useMemo(() => parseAddressList(f.extraPayees), [f.extraPayees]);
   const allPayees = useMemo(() => [...new Set([...f.payees, ...extra.valid])], [f.payees, extra.valid]);
 
