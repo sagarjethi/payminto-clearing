@@ -1,0 +1,29 @@
+{
+  "name": "@payminto/node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env src/main.ts",
+    "start": "node src/main.ts",
+    "db:reset": "node scripts/reset-db.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@payminto/protocol": "workspace:*",
+    "hono": "^4.13.13",
+    "viem": "^2.57.10",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@payminto/sdk": "workspace:*",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
