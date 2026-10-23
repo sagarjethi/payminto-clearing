@@ -164,12 +164,12 @@ export default function NettingPage() {
                           {stepIndex >= 3 ? <Check className="size-3.5 text-positive" /> : i + 1}
                         </span>
                         <div className="min-w-0 flex-1 text-sm">
-                          <div className="flex min-w-0 items-center gap-1.5">
-                            <span className="truncate font-medium">{nameOf(t.from) ?? "Payer"}</span>
+                          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+                            <span className="font-medium">{nameOf(t.from) ?? "Payer"}</span>
                             <ArrowRight className="size-3.5 shrink-0 text-subtle" aria-label="pays" />
-                            <span className="truncate font-medium">{nameOf(t.to) ?? "Payee"}</span>
+                            <span className="font-medium">{nameOf(t.to) ?? "Payee"}</span>
                           </div>
-                          <div className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-subtle">
+                          <div className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-subtle max-sm:hidden">
                             <Address address={t.from} showName={false} copy={false} explorer={false} />
                             <span aria-hidden>to</span>
                             <Address address={t.to} showName={false} copy={false} explorer={false} />
@@ -255,13 +255,13 @@ function NetPositions({ preview, nameOf }: { preview: NettingPreview; nameOf: (a
     <div className="mt-5 border-t pt-4">
       <h3 className="text-sm font-medium">Net position per wallet</h3>
       <p className="mt-0.5 text-xs text-muted-foreground">What each wallet owes minus what it is owed. Only these differences move.</p>
-      <div className="-mx-4 mt-3 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-        <table className="w-full min-w-[30rem] text-sm">
+      <div className="mt-3">
+        <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-muted-foreground">
               <th className="py-2 pr-3 font-normal">Wallet</th>
-              <th className="py-2 pr-3 text-right font-normal">Owes</th>
-              <th className="py-2 pr-3 text-right font-normal">Is owed</th>
+              <th className="py-2 pr-3 text-right font-normal max-sm:hidden">Owes</th>
+              <th className="py-2 pr-3 text-right font-normal max-sm:hidden">Is owed</th>
               <th className="py-2 text-right font-normal">Net</th>
             </tr>
           </thead>
@@ -271,10 +271,10 @@ function NetPositions({ preview, nameOf }: { preview: NettingPreview; nameOf: (a
                 <td className="py-2 pr-3">
                   <span className="font-medium">{nameOf(r.party) ?? "Wallet"}</span>
                 </td>
-                <td className="py-2 pr-3 text-right text-muted-foreground">
+                <td className="py-2 pr-3 text-right text-muted-foreground max-sm:hidden">
                   <Money atomic={owes.get(r.party) ?? 0n} />
                 </td>
-                <td className="py-2 pr-3 text-right text-muted-foreground">
+                <td className="py-2 pr-3 text-right text-muted-foreground max-sm:hidden">
                   <Money atomic={owed.get(r.party) ?? 0n} />
                 </td>
                 <td className={cn("py-2 text-right font-medium", r.balance < 0n ? "text-negative" : r.balance > 0n ? "text-positive" : "text-muted-foreground")}>
@@ -357,9 +357,9 @@ function SettledResult({ batch, snapshot }: { batch: import("@/lib/schemas").Bat
             style={{ animationDelay: `${150 + i * 120}ms` }}
           >
             <span className="min-w-0 flex-1">
-              <Address address={t.from} copy={false} explorer={false} />
-              <ArrowRight className="mx-1 inline size-3.5 text-subtle" aria-label="to" />
-              <Address address={t.to} copy={false} explorer={false} />
+              <Address address={t.from} copy={false} explorer={false} nameOnly />
+              <ArrowRight className="mx-1.5 inline size-3.5 text-subtle" aria-label="to" />
+              <Address address={t.to} copy={false} explorer={false} nameOnly />
             </span>
             <Money atomic={t.amount} className="font-medium" />
             <HspChip status={t.hsp?.status} />

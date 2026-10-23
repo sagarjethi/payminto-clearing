@@ -78,7 +78,7 @@ export default function LedgerPage() {
                       const n = nameOf(a.account);
                       return (
                         <tr key={a.account}>
-                          <td className="px-5 py-2.5">
+                          <td className="px-5 py-2.5 whitespace-nowrap">
                             <span className="font-medium">{n.who}</span> <span className="text-muted-foreground">{n.kind}</span>
                           </td>
                           <td className="px-3 py-2.5 text-right text-muted-foreground"><Money atomic={a.debit} maxFraction={4} /></td>

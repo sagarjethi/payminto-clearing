@@ -24,7 +24,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Address, Field, Fields, Hash, Meter, Money, PageHeader, Panel } from "@/components/app/primitives";
+import { Address, Field, Fields, Hash, Meter, Money, PageHeader, Panel, PartyLine } from "@/components/app/primitives";
 import { CallStatusChip, MandateStatusChip, RuleChip } from "@/components/app/status";
 import { StatStrip } from "@/components/app/stat-strip";
 import { BlockSkeleton, EmptyState, ErrorState } from "@/components/app/states";
@@ -79,15 +79,23 @@ export default function MandateDetailPage() {
 
       <StatStrip
         stats={[
-          { label: "Total cap", value: <Money atomic={m.mandate.totalCap} maxFraction={2} />, note: `${pct.toFixed(1)}% used` },
+          {
+            label: "Total cap",
+            value: <Money atomic={m.mandate.totalCap} maxFraction={2} />,
+            note: (
+              <span className="flex items-center gap-2">
+                <span className="w-16 shrink-0">
+                  <Meter value={pct} tone={pct > 90 ? "negative" : pct > 75 ? "warning" : "primary"} label="Total cap used" />
+                </span>
+                {pct.toFixed(1)}% used
+              </span>
+            ),
+          },
           { label: "Settled", value: <Money atomic={m.spend.settled} maxFraction={4} />, note: "paid on chain" },
           { label: "Awaiting netting", value: <Money atomic={m.spend.pending} maxFraction={4} />, note: "accepted, not yet settled" },
           { label: "Remaining", value: <Money atomic={m.spend.remaining} maxFraction={4} />, note: <>Today <Money atomic={m.spend.today} maxFraction={4} /> of <Money atomic={m.policy.dailyCap} maxFraction={2} /></> },
         ]}
       />
-      <div className="mt-3">
-        <Meter value={pct} tone={pct > 90 ? "negative" : pct > 75 ? "warning" : "primary"} label="Total cap used" />
-      </div>
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <div className="flex min-w-0 flex-col gap-5">
@@ -108,10 +116,10 @@ export default function MandateDetailPage() {
                 {m.payees.length === 0 ? (
                   <span className="text-muted-foreground">Any payee</span>
                 ) : (
-                  <ul className="space-y-1">
+                  <ul className="space-y-2">
                     {m.payees.map((p) => (
                       <li key={p}>
-                        <Address address={p} />
+                        <PartyLine address={p} />
                       </li>
                     ))}
                   </ul>
@@ -169,8 +177,8 @@ function OnChain({ m }: { m: MandateDetail }) {
     <Panel title="On chain" description="The signed mandate as ClearingHub stores it">
       <Fields>
         <Field label="Mandate id"><Hash value={m.id} /></Field>
-        <Field label="Owner"><Address address={m.mandate.owner} /></Field>
-        <Field label="Agent"><Address address={m.mandate.agent} /></Field>
+        <Field label="Owner"><Address address={m.mandate.owner} showName={false} /></Field>
+        <Field label="Agent"><PartyLine address={m.mandate.agent} /></Field>
         <Field label="Token">
           <span className="inline-flex items-center gap-2">
             {t.symbol} <Address address={m.mandate.token} showName={false} />

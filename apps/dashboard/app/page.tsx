@@ -84,7 +84,7 @@ function Kpis() {
         {
           label: "Denials, last 24h",
           value: <span className={cn("num", data.denials24h > 0 && "text-negative")}>{formatInt(data.denials24h)}</span>,
-          note: data.denials24h > 0 ? "refused before any money moved" : "every voucher passed",
+          note: data.denials24h > 0 ? "refused, no money moved" : "every voucher passed",
         },
         { label: "Active mandates", value: <span className="num">{formatInt(data.activeMandates)}</span>, note: `${data.providers} providers` },
       ]}

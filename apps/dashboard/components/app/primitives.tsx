@@ -89,12 +89,15 @@ export function Address({
   className,
   explorer = true,
   copy = true,
+  nameOnly = false,
 }: {
   address: string | null | undefined;
   showName?: boolean;
   className?: string;
   explorer?: boolean;
   copy?: boolean;
+  /** Show just the wallet's name when it is known; the address stays in the tooltip. */
+  nameOnly?: boolean;
 }) {
   const dir = useDirectory();
   const ex = useExplorer();
@@ -106,7 +109,9 @@ export function Address({
         <TooltipTrigger asChild>
           <span className="inline-flex min-w-0 items-baseline gap-1.5" tabIndex={0}>
             {party && <span className="truncate font-medium text-foreground">{party.name}</span>}
-            <span className={cn("hash shrink-0 text-[0.86em]", party ? "text-subtle" : "text-foreground")}>{shortAddress(address)}</span>
+            {!(party && nameOnly) && (
+              <span className={cn("hash shrink-0 text-[0.86em]", party ? "text-subtle" : "text-foreground")}>{shortAddress(address)}</span>
+            )}
           </span>
         </TooltipTrigger>
         <TooltipContent className="hash max-w-none">{address}</TooltipContent>
@@ -220,7 +225,7 @@ export function Fields({ children, className }: { children: ReactNode; className
 
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   return (
-    <div className="grid min-w-0 grid-cols-1 gap-1 sm:grid-cols-[11rem_1fr] sm:gap-4">
+    <div className="grid min-w-0 grid-cols-1 gap-1 sm:grid-cols-[9rem_minmax(0,1fr)] sm:gap-4">
       <dt className="text-muted-foreground" title={hint}>
         {label}
       </dt>
@@ -235,5 +240,19 @@ export function Meter({ value, tone = "primary", label }: { value: number; tone?
     <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted" role="meter" aria-label={label} aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}>
       <div className={cn("h-full rounded-full transition-[width] duration-500", color)} style={{ width: `${Math.max(value > 0 ? 1.5 : 0, value)}%` }} />
     </div>
+  );
+}
+
+/** A wallet on two lines: its name, then the address with copy and explorer actions. */
+export function PartyLine({ address }: { address: string | null | undefined }) {
+  const dir = useDirectory();
+  if (!address) return <span className="text-subtle">-</span>;
+  const party = dir.lookup(address);
+  if (!party) return <Address address={address} showName={false} />;
+  return (
+    <span className="flex min-w-0 flex-col">
+      <span className="font-medium">{party.name}</span>
+      <Address address={address} showName={false} className="text-muted-foreground" />
+    </span>
   );
 }

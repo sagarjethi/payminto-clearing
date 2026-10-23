@@ -164,8 +164,8 @@ function NodeMark({
   const left = node.side === "payer";
   const tx = left ? node.x - 10 : node.x + nodeWidth + 10;
   const cy = node.y + node.height / 2;
-  const maxChars = Math.floor((labelWidth - 14) / 7);
-  const shown = title.length > maxChars ? `${title.slice(0, Math.max(4, maxChars - 1))}…` : title;
+  const lines = wrapLabel(title, Math.floor((labelWidth - 14) / 7));
+  const top = cy - 3 - (lines.length - 1) * 7;
   return (
     <g
       className="transition-opacity duration-300"
@@ -187,18 +187,42 @@ function NodeMark({
         />
       )}
       <rect x={node.x} y={node.y} width={nodeWidth} height={node.height} rx={2} fill={color} />
-      <text x={tx} y={cy - 3} textAnchor={left ? "end" : "start"} className="fill-foreground text-[12.5px] font-medium">
+      <text x={tx} y={top} textAnchor={left ? "end" : "start"} className="fill-foreground text-[12.5px] font-medium">
         <title>{title}</title>
-        {shown}
+        {lines.map((l, i) => (
+          <tspan key={i} x={tx} dy={i === 0 ? 0 : 14}>
+            {l}
+          </tspan>
+        ))}
       </text>
-      <text x={tx} y={cy + 12} textAnchor={left ? "end" : "start"} className="num fill-muted-foreground text-[11.5px]">
+      <text x={tx} y={top + (lines.length - 1) * 14 + 15} textAnchor={left ? "end" : "start"} className="num fill-muted-foreground text-[11.5px]">
         {amount}
       </text>
       {node.dual && (
-        <text x={tx} y={cy + 26} textAnchor={left ? "end" : "start"} className="fill-subtle text-[10.5px]">
+        <text x={tx} y={top + (lines.length - 1) * 14 + 29} textAnchor={left ? "end" : "start"} className="fill-subtle text-[10.5px]">
           {left ? "also a payee" : "also a payer"}
         </text>
       )}
     </g>
   );
+}
+
+/** Breaks a label into at most two lines on word boundaries, truncating only what still does not fit. */
+export function wrapLabel(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text];
+  const words = text.split(" ");
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    const next = cur ? `${cur} ${w}` : w;
+    if (next.length <= maxChars || !cur) cur = next;
+    else {
+      lines.push(cur);
+      cur = w;
+    }
+  }
+  lines.push(cur);
+  const out = lines.slice(0, 2);
+  if (lines.length > 2) out[1] = `${out[1]} ${lines.slice(2).join(" ")}`;
+  return out.map((l) => (l.length > maxChars ? `${l.slice(0, Math.max(3, maxChars - 1))}…` : l));
 }

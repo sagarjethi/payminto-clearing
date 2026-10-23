@@ -103,7 +103,7 @@ export default function BatchDetailPage() {
                     <th className="px-3 py-2.5 font-normal">Payee</th>
                     <th className="px-3 py-2.5 text-right font-normal">Calls</th>
                     <th className="px-3 py-2.5 text-right font-normal">Cumulative</th>
-                    <th className="px-5 py-2.5 text-right font-normal">Paid this batch</th>
+                    <th className="px-5 py-2.5 text-right font-normal whitespace-nowrap">Paid this batch</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
