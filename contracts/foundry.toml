@@ -1,0 +1,23 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.24"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+fs_permissions = [{ access = "read-write", path = "./deployments" }]
+
+[profile.default.fuzz]
+runs = 512
+
+[rpc_endpoints]
+hashkey = "https://mainnet.hsk.xyz"
+hashkey_testnet = "https://testnet.hsk.xyz"
+
+[etherscan]
+hashkey = { key = "verify", chain = 177, url = "https://hsk.blockscout.com/api/" }
+hashkey_testnet = { key = "verify", chain = 133, url = "https://testnet-explorer.hsk.xyz/api/" }
+
+[fmt]
+line_length = 120
