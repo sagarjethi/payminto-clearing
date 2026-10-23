@@ -9,3 +9,4 @@ data/
 *.local.json
 coverage/
 .DS_Store
+contracts/deployments/31337.json
