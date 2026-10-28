@@ -6,7 +6,6 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { getAddress, isAddress, type Address, type Hex } from "viem";
 import {
-  clearingHubAbi,
   explorerAddress,
   explorerTx,
   networkFor,
@@ -24,6 +23,7 @@ import type { Ledger } from "./ledger.ts";
 import type { Logger } from "./logger.ts";
 import type { MandateService } from "./mandates.ts";
 import { overview } from "./overview.ts";
+import { receiptVerifiedOnchain } from "./proofs.ts";
 import type { SettlementService } from "./settlement.ts";
 import { batchSummaryJson, providerPublicJson, nowIso, type ProviderRow, type Store } from "./store.ts";
 import type { VoucherService } from "./vouchers.ts";
@@ -288,12 +288,9 @@ export function createApi(s: NodeServices): Hono<Vars> {
     if (!call) throw new ApiError(404, "NOT_FOUND", "call not found");
     const batch = call.batch_seq !== null ? store.batch(String(call.batch_seq)) : undefined;
     const proof = call.proof ? (JSON.parse(call.proof) as Hex[]) : [];
-    let onchainVerified: boolean | null = null;
-    if (batch && batch.status === "confirmed") {
-      onchainVerified = (await chain.public
-        .readContract({ address: chain.hub, abi: clearingHubAbi, functionName: "verifyReceipt", args: [batch.batch_id, call.leaf, proof] })
-        .catch(() => null)) as boolean | null;
-    }
+    // True only if this node's operator settled the batch, signed the leaf, and the Merkle proof verifies on chain.
+    const onchainVerified =
+      batch && batch.status === "confirmed" ? await receiptVerifiedOnchain(chain, batch.batch_id, call.leaf, call.node_signature, proof) : null;
     const receipt: ClearingReceipt = {
       callId: call.call_id,
       mandateId: call.mandate_id,
