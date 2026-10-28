@@ -28,6 +28,8 @@ export type Stack = {
   runDir: string;
   dbPath: string;
   logFile: string;
+  /** Per-agent durable receipt stores (disposable *.demo.db files in the run dir); a second process of an agent shares its file. */
+  receiptStores: { treasury: string; trading: string; writer: string };
   services: { market: string; risk: string; writer: string; rogue: string };
   providerIds: { market: string; risk: string; writer: string; deep: string; rogue: string };
   addresses: { owner: Address; treasury: Address; trading: Address; writer: Address; market: Address; risk: Address; rogue: Address; operator: Address };
@@ -216,17 +218,34 @@ export async function startStack(cfg: DemoConfig, opts: { say?: Say; runDir?: st
     }
     if (!cfg.live) say("minted 100 test USDC to each agent");
 
+    // Each agent keeps its receipts and signed positions in a durable store; the "compromised" runtime of the same
+    // key shares it, as any second process of one agent must, or it would refuse to extend positions it cannot verify.
+    const receiptStores = {
+      treasury: join(runDir, "agent-treasury.receipts.demo.db"),
+      trading: join(runDir, "agent-trading.receipts.demo.db"),
+      writer: join(runDir, "agent-writer.receipts.demo.db"),
+    };
+    for (const path of Object.values(receiptStores)) assertDisposableTarget(path);
     const common = { chainId: cfg.chainId, hub, nodeUrl, trustedNode: operator, autoCosign: true, cosignIntervalMs: 250 };
-    const treasury = new AgentClient({ ...common, account: acct(cfg.keys.treasury), mandateId: mandates.treasury });
-    const writer = new AgentClient({ ...common, account: acct(cfg.keys.writer), mandateId: mandates.writer });
-    const tradingWallet = await AgentWallet.connect({ nodeUrl, chainId: cfg.chainId, hub, agentKey: cfg.keys.trading, mandateId: mandates.trading, rpcUrl, trustedNode: operator });
+    const treasury = new AgentClient({ ...common, account: acct(cfg.keys.treasury), mandateId: mandates.treasury, storePath: receiptStores.treasury });
+    const writer = new AgentClient({ ...common, account: acct(cfg.keys.writer), mandateId: mandates.writer, storePath: receiptStores.writer });
+    const tradingWallet = await AgentWallet.connect({
+      nodeUrl,
+      chainId: cfg.chainId,
+      hub,
+      agentKey: cfg.keys.trading,
+      mandateId: mandates.trading,
+      rpcUrl,
+      trustedNode: operator,
+      receiptStorePath: receiptStores.trading,
+    });
     const compromised = {
-      treasury: new AgentClient({ chainId: cfg.chainId, hub, nodeUrl, account: acct(cfg.keys.treasury), mandateId: mandates.treasury, enforcePolicy: false }),
-      trading: new AgentClient({ chainId: cfg.chainId, hub, nodeUrl, account: acct(cfg.keys.trading), mandateId: mandates.trading, enforcePolicy: false }),
+      treasury: new AgentClient({ chainId: cfg.chainId, hub, nodeUrl, account: acct(cfg.keys.treasury), mandateId: mandates.treasury, enforcePolicy: false, receipts: treasury.receipts }),
+      trading: new AgentClient({ chainId: cfg.chainId, hub, nodeUrl, account: acct(cfg.keys.trading), mandateId: mandates.trading, enforcePolicy: false, receipts: tradingWallet.agent.receipts }),
     };
     cleanups.push(() => {
-      treasury.stopCosignLoop();
-      writer.stopCosignLoop();
+      treasury.close();
+      writer.close();
       tradingWallet.close();
     });
     // Approve exactly the mandate cap on live networks; unlimited on the local chain.
@@ -273,6 +292,7 @@ export async function startStack(cfg: DemoConfig, opts: { say?: Say; runDir?: st
       runDir,
       dbPath,
       logFile,
+      receiptStores,
       services,
       providerIds: { market: regMarket.id, risk: regRisk.id, writer: regWriter.id, deep: regDeep.id, rogue: regRogue.id },
       addresses,

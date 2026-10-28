@@ -36,6 +36,7 @@ try {
     rpcUrl: config.rpcUrl,
     maxPrice: config.maxPrice,
     trustedNode: config.trustedNode,
+    receiptStorePath: config.receiptStorePath,
   });
 } catch (err) {
   log(`cannot reach the clearing node at ${config.nodeUrl}: ${err instanceof Error ? err.message : String(err)}`);

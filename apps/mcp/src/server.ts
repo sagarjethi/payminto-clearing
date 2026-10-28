@@ -138,7 +138,8 @@ export function createMcpServer(wallet: AgentWallet): McpServer {
       title: "Prove a receipt on chain",
       description:
         "Proves that one paid call is included in a settled batch: returns the batch id, settlement tx, the Merkle path from the call's receipt to the receipts root stored on chain, " +
-        "and the result of ClearingHub.verifyReceipt checked independently by this wallet. If the call is not settled yet it says so. Free to call.",
+        "and whether this wallet independently proved it on chain: the batch was settled by its clearing node's operator, the receipt is signed by that operator, " +
+        "and ClearingHub.verifyReceipt accepts the Merkle path. If the call is not settled yet it says so. Free to call.",
       inputSchema: { callId: z.string().regex(/^0x[0-9a-fA-F]{64}$/).describe("callId from call_paid_service or get_receipts.") },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -147,7 +148,11 @@ export function createMcpServer(wallet: AgentWallet): McpServer {
         const p = await wallet.prove(callId);
         if (!p.settled) return ok(String(p.message), p);
         const v = p.independentlyVerifiedOnchain ?? p.nodeSaysVerifiedOnchain;
-        return ok(`Call ${p.callId} is in batch ${p.batchId}. verifyReceipt on chain: ${v === null ? "not checked" : String(v)}.`, p);
+        const why = p.notVerifiedBecause ? ` Not proven: ${p.notVerifiedBecause}.` : "";
+        return ok(
+          `Call ${p.callId} is in batch ${p.batchId}. Proven on chain (settled by the clearing node, node-signed, verifyReceipt): ${v === null ? "not checked" : String(v)}.${why}`,
+          p,
+        );
       }),
   );
 

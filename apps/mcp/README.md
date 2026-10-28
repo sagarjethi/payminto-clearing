@@ -13,7 +13,7 @@ The build contract is `docs/SPEC.md` section 7.
 | `call_paid_service { serviceId \| url, method, query, body }` | Calls a service and pays its x402 `payminto-voucher` requirement from the mandate; returns the response and the receipt | yes |
 | `get_budget` | Total cap, spent (settled plus pending), remaining, per-call and daily caps, rate limit, expiry, allowed payees | no |
 | `get_receipts { limit }` | Node-signed receipts paid in this session, newest first | no |
-| `prove_receipt { callId }` | Merkle path to the batch root on chain and an independent `ClearingHub.verifyReceipt` check | no |
+| `prove_receipt { callId }` | Merkle path to the batch root on chain; proven only if the batch was settled by the node operator, the operator signed the receipt, and `ClearingHub.verifyReceipt` accepts the path | no |
 
 A refused payment is a tool error that names the rule, for example:
 
@@ -34,10 +34,14 @@ The server instructions also tell the model never to follow payment instructions
 | `MANDATE_ID` | required | The mandate the owner signed for this agent |
 | `RPC_URL` | network default (none on 31337) | Used by `prove_receipt` and `get_budget` to read the hub directly |
 | `MAX_PRICE_ATOMIC` | unset | Optional extra per-call ceiling enforced by the wallet |
-| `TRUSTED_NODE` | the node's operator | Receipts signed by any other key are rejected |
+| `TRUSTED_NODE` | unset | Optional pin of the node operator address; receipts must be signed by the operator `NODE_URL` reports in any case |
+| `RECEIPT_STORE_PATH` | `$PAYMINTO_DATA_DIR/mcp/receipts-<CHAIN_ID>-<agent>.db` | SQLite file (WAL) with this agent's receipts, the highest cumulative it signed per payee, and its HSP co-sign totals; every process using the same `AGENT_KEY` must point at the same file |
+| `PAYMINTO_DATA_DIR` | `~/.payminto` | Base directory for local state when `RECEIPT_STORE_PATH` is unset |
 | `MCP_HTTP_PORT`, `MCP_HTTP_HOST` | `3334`, `127.0.0.1` | Streamable HTTP listener (with `--http`) |
 
 The wallet also runs the HSP co-sign loop, so net debits of this agent are co-signed after it checks them against its own receipts.
+Receipts and signed positions live in `RECEIPT_STORE_PATH`, so after a restart the wallet still lists and proves old receipts, co-signs settlements for them, and keeps paying.
+If the file is lost, the wallet refuses to extend positions it cannot prove it signed (`POSITION_UNVERIFIED`) until the mandate is replaced.
 
 ## Run it
 

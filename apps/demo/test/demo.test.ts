@@ -11,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { portIsFree } from "../src/chain.ts";
 import { REPO_ROOT } from "../src/config.ts";
 import { checkSummary } from "../src/checks.ts";
+import { SqliteReceiptStore } from "@payminto/sdk";
 import { loadDemoConfig } from "../src/config.ts";
 import { collectSummary, runTraffic, settle, type Summary } from "../src/scenario.ts";
 import { startStack, type Stack } from "../src/stack.ts";
@@ -103,6 +104,22 @@ describe("pnpm demo scenario (compressed)", () => {
     expect(stack.dbPath).toMatch(/\.demo\.db$/);
     expect(stack.dbPath.startsWith(dataDir)).toBe(true);
   });
+
+  it("keeps every agent's receipts and signed positions in a durable, disposable store", () => {
+    for (const path of Object.values(stack.receiptStores)) {
+      expect(path).toMatch(/\.receipts\.demo\.db$/);
+      expect(path.startsWith(dataDir)).toBe(true);
+    }
+    expect(stack.treasury.receipts.all().length).toBeGreaterThan(0);
+    const reopened = new SqliteReceiptStore(stack.receiptStores.treasury);
+    try {
+      expect(reopened.all().length).toBe(stack.treasury.receipts.all().length);
+      const signed = [...reopened.signedPositions(stack.mandates.treasury).values()];
+      expect(signed.length).toBeGreaterThan(0);
+    } finally {
+      reopened.close();
+    }
+  });
 });
 
 describe("MCP server over stdio (the Claude Desktop / Claude Code path)", () => {
@@ -118,6 +135,8 @@ describe("MCP server over stdio (the Claude Desktop / Claude Code path)", () => 
         HUB_ADDRESS: stack.hub,
         AGENT_KEY: stack.cfg.keys.trading,
         MANDATE_ID: stack.mandates.trading,
+        // A second process of the Trading Agent: it shares the in-process wallet's receipt store.
+        RECEIPT_STORE_PATH: stack.receiptStores.trading,
       },
       stderr: "ignore",
     });
@@ -127,7 +146,7 @@ describe("MCP server over stdio (the Claude Desktop / Claude Code path)", () => 
       const budget = (await client.callTool({ name: "get_budget", arguments: {} })) as { content: Array<{ text: string }> };
       expect(budget.content[0]!.text).toMatch(/^Mandate 0x[0-9a-f]{64}\. Spent \d+\.\d+ USDC\. Remaining /);
       const proof = (await client.callTool({ name: "prove_receipt", arguments: { callId: summary.proof!.callId } })) as { content: Array<{ text: string }> };
-      expect(proof.content[0]!.text).toMatch(/verifyReceipt on chain: true/);
+      expect(proof.content[0]!.text).toMatch(/Proven on chain \(settled by the clearing node, node-signed, verifyReceipt\): true/);
     } finally {
       await client.close();
     }

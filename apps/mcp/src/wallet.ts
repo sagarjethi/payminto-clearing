@@ -12,7 +12,7 @@ import {
   type ClearingReceipt,
   type DenialRule,
 } from "@payminto/protocol";
-import { AgentClient, NodeHttp, type DeniedEvent, type VerifiedPolicy } from "@payminto/sdk";
+import { AgentClient, NodeHttp, verifyReceiptOnchain, type DeniedEvent, type ReceiptStore, type VerifiedPolicy } from "@payminto/sdk";
 
 // Everything read from the clearing node or a provider is untrusted input: parse it.
 const zAddr = z.string().transform((v, ctx) => {
@@ -50,7 +50,19 @@ const catalogSchema = z.array(
 const positionSchema = z.object({ cumulative: zUint, settled: zUint }).loose();
 const proofSchema = z
   .object({
-    receipt: z.object({ callId: zB32, mandateId: zB32, payee: zAddr, amount: zUint, cumulative: zUint, requestHash: zB32, timestamp: z.number(), leaf: zB32 }).loose(),
+    receipt: z
+      .object({
+        callId: zB32,
+        mandateId: zB32,
+        payee: zAddr,
+        amount: zUint,
+        cumulative: zUint,
+        requestHash: zB32,
+        timestamp: z.number(),
+        leaf: zB32,
+        nodeSignature: z.string().regex(/^0x[0-9a-fA-F]+$/).transform((v) => v as Hex),
+      })
+      .loose(),
     status: z.string(),
     batchId: zB32.nullable(),
     batchStatus: z.string().nullable().optional(),
@@ -120,6 +132,10 @@ export type WalletOptions = {
   trustedNode?: Address;
   /** Check the mandate policy before signing (default true, the SDK default). */
   enforcePolicy?: boolean;
+  /** Durable receipt store file (SQLite). Without it (and without `receipts`), receipts and signed positions are lost on restart. */
+  receiptStorePath?: string;
+  /** A store shared with another client of the same agent key (takes precedence over receiptStorePath). */
+  receipts?: ReceiptStore;
   fetch?: typeof fetch;
   /** Largest response body (characters) returned to the model. */
   maxBodyChars?: number;
@@ -159,8 +175,16 @@ export class AgentWallet {
       maxPrice: o.maxPrice,
       trustedNode: o.trustedNode ?? info.operator,
       enforcePolicy: o.enforcePolicy,
+      receipts: o.receipts,
+      storePath: o.receiptStorePath,
       fetch: o.fetch,
     });
+    // Receipts paid before a restart stay listable and provable.
+    for (const r of this.agent.receipts.all()) {
+      if (r.mandateId.toLowerCase() !== this.mandateId) continue;
+      this.history.push({ at: new Date(r.timestamp * 1000).toISOString(), service: null, url: "", receipt: r, price: r.amount });
+    }
+    if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.#public = o.rpcUrl ? (createPublicClient({ transport: http(o.rpcUrl) }) as PublicClient) : null;
   }
 
@@ -186,9 +210,9 @@ export class AgentWallet {
     return `${formatAmount(atomic, this.token.decimals)} ${this.token.symbol}`;
   }
 
-  /** Stops the HSP co-sign loop (call on shutdown). */
+  /** Stops the HSP co-sign loop and closes the receipt store (call on shutdown). */
   close(): void {
-    this.agent.stopCosignLoop();
+    this.agent.close();
   }
 
   /** The mandate, policy and allowlist, verified by the SDK against the mandate id (a node cannot loosen them). */
@@ -404,11 +428,14 @@ export class AgentWallet {
       p.proof,
     );
     const matchesMyReceipt = mine ? mine.leaf.toLowerCase() === p.leaf.toLowerCase() : null;
+    // A root on chain proves nothing by itself (settleBatch is permissionless): the batch must have been settled by
+    // this wallet's node operator, and the leaf must carry that operator's signature.
     let independentlyVerifiedOnchain: boolean | null = null;
+    let check: Awaited<ReturnType<typeof verifyReceiptOnchain>> | null = null;
     if (this.#public) {
-      independentlyVerifiedOnchain = (await this.#public
-        .readContract({ address: this.hub, abi: clearingHubAbi, functionName: "verifyReceipt", args: [p.batchId, p.leaf, p.proof] })
-        .catch(() => null)) as boolean | null;
+      const operator = await this.agent.nodeOperator();
+      check = await verifyReceiptOnchain({ publicClient: this.#public, hub: this.hub, operator, receipt: r, batchId: p.batchId, proof: p.proof }).catch(() => null);
+      independentlyVerifiedOnchain = check ? check.verified : null;
     }
     return {
       callId: id,
@@ -426,6 +453,10 @@ export class AgentWallet {
       payee: r.payee,
       nodeSaysVerifiedOnchain: p.onchainVerified,
       independentlyVerifiedOnchain,
+      settler: check?.settler ?? null,
+      settledByNode: check?.settlerIsNode ?? null,
+      nodeSigned: check?.nodeSigned ?? null,
+      notVerifiedBecause: check?.reason ?? null,
       localProofValid,
       matchesMyReceipt,
     };

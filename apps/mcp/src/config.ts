@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAddress, isAddress, type Address, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { z } from "zod";
 import { networks } from "@payminto/protocol";
 
@@ -35,6 +37,10 @@ const envSchema = z.object({
   MAX_PRICE_ATOMIC: z.string().regex(/^\d+$/).optional(),
   /** Expected node operator address; receipts signed by anyone else are rejected. */
   TRUSTED_NODE: zAddress.optional(),
+  /** Durable receipt and signed-position store (SQLite). Processes sharing AGENT_KEY must share this file. */
+  RECEIPT_STORE_PATH: z.string().min(1).optional(),
+  /** Base directory for local state when RECEIPT_STORE_PATH is unset. */
+  PAYMINTO_DATA_DIR: z.string().min(1).optional(),
   MCP_HTTP_PORT: z.string().regex(/^\d+$/).default("3334").transform(Number),
   MCP_HTTP_HOST: z.string().default("127.0.0.1"),
 });
@@ -49,6 +55,8 @@ export type McpConfig = {
   mandateId: Hex;
   maxPrice: bigint | undefined;
   trustedNode: Address | undefined;
+  /** SQLite file holding this agent's receipts and the highest cumulative it signed per payee. */
+  receiptStorePath: string;
   http: { port: number; host: string };
 };
 
@@ -82,6 +90,10 @@ export function loadMcpConfig(env: Record<string, string | undefined> = process.
     mandateId: e.MANDATE_ID,
     maxPrice: e.MAX_PRICE_ATOMIC === undefined ? undefined : BigInt(e.MAX_PRICE_ATOMIC),
     trustedNode: e.TRUSTED_NODE,
+    receiptStorePath: resolve(
+      e.RECEIPT_STORE_PATH ??
+        join(e.PAYMINTO_DATA_DIR ?? join(homedir(), ".payminto"), "mcp", `receipts-${e.CHAIN_ID}-${privateKeyToAccount(e.AGENT_KEY).address.toLowerCase()}.db`),
+    ),
     http: { port: e.MCP_HTTP_PORT, host: e.MCP_HTTP_HOST },
   };
 }

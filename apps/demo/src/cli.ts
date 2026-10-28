@@ -120,7 +120,8 @@ async function stageMode(cfg: DemoConfig) {
     out(
       c.dim(
         `  claude mcp add payminto-trading -e NODE_URL=${st.nodeUrl} -e CHAIN_ID=31337 -e RPC_URL=${st.rpc.rpcUrl} -e HUB_ADDRESS=${st.hub} ` +
-          `-e AGENT_KEY=${cfg.keys.trading} -e MANDATE_ID=${st.mandates.trading} -- node ${REPO_ROOT}/apps/mcp/src/main.ts`,
+          `-e AGENT_KEY=${cfg.keys.trading} -e MANDATE_ID=${st.mandates.trading} -e RECEIPT_STORE_PATH=${st.receiptStores.trading} ` +
+          `-- node ${REPO_ROOT}/apps/mcp/src/main.ts`,
       ),
     );
   }

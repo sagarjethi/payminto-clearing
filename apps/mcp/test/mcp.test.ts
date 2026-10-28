@@ -56,6 +56,8 @@ let wallet: AgentWallet;
 let client: Client;
 let ids: { quote: string; rogue: string; pricey: string };
 let providerUrl = "";
+let mandateId: Hex;
+const STORE = join(dir, "agent.receipts.test.db");
 
 type Res = { isError?: boolean; content: Array<{ type: string; text: string }> };
 const call = async (name: string, args: Record<string, unknown> = {}) => (await client.callTool({ name, arguments: args })) as Res;
@@ -136,7 +138,8 @@ beforeAll(async () => {
   const mint = await w(KEYS.deployer).writeContract({ address: token, abi: mockStablecoinAbi, functionName: "mint", args: [agent, 100_000_000n] });
   await pub.waitForTransactionReceipt({ hash: mint });
 
-  wallet = await AgentWallet.connect({ nodeUrl: node.url, chainId: 31337, agentKey: KEYS.agent, mandateId: m.mandateId, rpcUrl });
+  mandateId = m.mandateId;
+  wallet = await AgentWallet.connect({ nodeUrl: node.url, chainId: 31337, agentKey: KEYS.agent, mandateId: m.mandateId, rpcUrl, receiptStorePath: STORE });
   stops.push(() => wallet.close());
   await wallet.agent.ensureAllowance(w(KEYS.agent), maxUint256, { token, publicClient: pub as never });
   const server = createMcpServer(wallet);
@@ -208,10 +211,34 @@ describe("payminto MCP server", () => {
     const settle = await fetch(`${node.url}/v1/settlements`, { method: "POST", headers: { authorization: `Bearer ${ADMIN}` } });
     expect(settle.status).toBe(200);
     const r = await call("prove_receipt", { callId: rs[1]!.callId });
-    expect(r.content[0]!.text).toMatch(/verifyReceipt on chain: true/);
-    expect(payload(r)).toMatchObject({ settled: true, independentlyVerifiedOnchain: true, nodeSaysVerifiedOnchain: true, localProofValid: true, matchesMyReceipt: true });
+    expect(r.content[0]!.text).toMatch(/Proven on chain \(settled by the clearing node, node-signed, verifyReceipt\): true/);
+    expect(payload(r)).toMatchObject({
+      settled: true,
+      independentlyVerifiedOnchain: true,
+      nodeSaysVerifiedOnchain: true,
+      localProofValid: true,
+      matchesMyReceipt: true,
+      settledByNode: true,
+      nodeSigned: true,
+      settler: privateKeyToAccount(KEYS.operator).address,
+    });
     const settledBudget = payload(await call("get_budget"));
     expect(settledBudget.spent.settled).toBe("0.004 USDC");
+  });
+
+  it("restarts from its receipt store: old receipts are listed and provable, and it keeps paying", async () => {
+    const paidBefore = wallet.agent.receipts.all().length;
+    const restarted = await AgentWallet.connect({ nodeUrl: node.url, chainId: 31337, agentKey: KEYS.agent, mandateId, rpcUrl, receiptStorePath: STORE });
+    try {
+      expect(restarted.receipts(100)).toHaveLength(paidBefore);
+      const last = restarted.receipts(1)[0]!;
+      expect((await restarted.prove(last.callId)).independentlyVerifiedOnchain).toBe(true);
+      // It still knows the cumulative it signed, so it can extend the node's position instead of refusing it.
+      const r = await restarted.call({ serviceId: ids.quote, query: { symbol: "AFTER-RESTART" } });
+      expect(r).toMatchObject({ ok: true, paid: { amountAtomic: PRICE.toString() } });
+    } finally {
+      restarted.close();
+    }
   });
 
   it("serves the same tools over Streamable HTTP at /mcp", async () => {
@@ -252,5 +279,11 @@ describe("configuration", () => {
     const ok = loadMcpConfig({ NODE_URL: "http://localhost:8787/", AGENT_KEY: secret, MANDATE_ID: `0x${"CD".repeat(32)}`, DEPLOYMENTS_DIR: dir });
     expect(ok).toMatchObject({ nodeUrl: "http://localhost:8787", chainId: 31337, http: { port: 3334, host: "127.0.0.1" } });
     expect(ok.mandateId).toBe(`0x${"cd".repeat(32)}`);
+    // The durable receipt store defaults to a per-agent file under the data dir.
+    const agentAddr = privateKeyToAccount(secret as Hex).address.toLowerCase();
+    const withDir = loadMcpConfig({ NODE_URL: "http://localhost:8787", AGENT_KEY: secret, MANDATE_ID: `0x${"cd".repeat(32)}`, DEPLOYMENTS_DIR: dir, PAYMINTO_DATA_DIR: dir });
+    expect(withDir.receiptStorePath).toBe(join(dir, "mcp", `receipts-31337-${agentAddr}.db`));
+    const explicit = loadMcpConfig({ NODE_URL: "http://localhost:8787", AGENT_KEY: secret, MANDATE_ID: `0x${"cd".repeat(32)}`, DEPLOYMENTS_DIR: dir, RECEIPT_STORE_PATH: join(dir, "r.db") });
+    expect(explicit.receiptStorePath).toBe(join(dir, "r.db"));
   });
 });
