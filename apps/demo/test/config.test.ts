@@ -75,3 +75,20 @@ describe("live network safety guard", () => {
     expect(all).toMatch(/133\.json: missing/);
   });
 });
+
+describe("portIsFree", () => {
+  // Regression: a port held on 127.0.0.1 only (for example a Docker port forward) was reported free because the probe
+  // bound 0.0.0.0, which macOS allows alongside a more specific bind, and the node then crashed with EADDRINUSE.
+  it("reports a port held on 127.0.0.1 only as busy", async () => {
+    const { createServer } = await import("node:net");
+    const { portIsFree } = await import("../src/chain.ts");
+    const holder = createServer();
+    await new Promise<void>((resolve) => holder.listen(0, "127.0.0.1", resolve));
+    const port = (holder.address() as { port: number }).port;
+    try {
+      expect(await portIsFree(port)).toBe(false);
+    } finally {
+      holder.close();
+    }
+  });
+});

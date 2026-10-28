@@ -35,13 +35,22 @@ export function freePort(): Promise<number> {
   });
 }
 
-export function portIsFree(port: number, host = "0.0.0.0"): Promise<boolean> {
+function canBind(port: number, host: string): Promise<boolean> {
   return new Promise((resolve) => {
     const srv = createServer();
     srv.unref();
     srv.once("error", () => resolve(false));
     srv.listen(port, host, () => srv.close(() => resolve(true)));
   });
+}
+
+/**
+ * Whether nothing listens on the port. Without a host it probes both 127.0.0.1 and 0.0.0.0: macOS lets a wildcard
+ * bind succeed next to a loopback-only listener (a Docker port forward, say), so one probe alone misses it.
+ */
+export async function portIsFree(port: number, host?: string): Promise<boolean> {
+  if (host) return canBind(port, host);
+  return (await canBind(port, "127.0.0.1")) && (await canBind(port, "0.0.0.0"));
 }
 
 export type Rpc = {
