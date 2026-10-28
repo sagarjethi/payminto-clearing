@@ -2,6 +2,7 @@
 pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
@@ -119,6 +120,7 @@ contract ClearingHub is EIP712, ReentrancyGuard {
     error TooManyClaims();
     error StaleVoucher();
     error NothingToSettle();
+    error PermitFailed();
 
     constructor() EIP712("Payminto Clearing", "1") {}
 
@@ -129,6 +131,31 @@ contract ClearingHub is EIP712, ReentrancyGuard {
     /// @notice Registers an owner-signed mandate. Anyone may submit it; the signature is the authority.
     /// @dev Supports EOA and ERC-1271 owners (for example a Safe).
     function openMandate(Mandate calldata m, bytes calldata ownerSig) external returns (bytes32 mandateId) {
+        return _openMandate(m, ownerSig);
+    }
+
+    /// @notice Opens a mandate and, in the same transaction, sets the agent's allowance to this hub with an
+    /// EIP-2612 permit the agent signed off chain. The agent needs no native token and sends no transaction.
+    /// @dev Front-run safe: anyone can submit a permit signature they observe, which consumes its nonce and makes
+    /// our permit call revert. The allowance it set is what matters, so a failed permit is accepted when the
+    /// allowance already covers permitValue; otherwise the whole call reverts and the mandate stays unopened.
+    function openMandateWithPermit(
+        Mandate calldata m,
+        bytes calldata ownerSig,
+        uint256 permitValue,
+        uint256 permitDeadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (bytes32 mandateId) {
+        mandateId = _openMandate(m, ownerSig);
+        try IERC20Permit(m.token).permit(m.agent, address(this), permitValue, permitDeadline, v, r, s) {}
+        catch {
+            if (IERC20(m.token).allowance(m.agent, address(this)) < permitValue) revert PermitFailed();
+        }
+    }
+
+    function _openMandate(Mandate calldata m, bytes calldata ownerSig) private returns (bytes32 mandateId) {
         if (m.owner == address(0) || m.agent == address(0) || m.token == address(0)) revert InvalidMandate();
         if (m.totalCap == 0 || m.validUntil <= m.validAfter || m.validUntil <= block.timestamp) {
             revert InvalidMandate();
