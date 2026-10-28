@@ -10,6 +10,8 @@ export type HspSettleInput = {
   batchId: Hex;
   /** Coordinator id from an earlier attempt, so retries resume instead of re-registering. */
   coordinatorId?: string | null;
+  /** EAS attestation of the batch (EAS_ATTEST=true), proving the `attests:payminto-batch-settled:v1` capability. */
+  attestationUid?: Hex | null;
 };
 
 export type HspSettleOutcome = {

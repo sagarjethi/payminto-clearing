@@ -3,7 +3,8 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createApi, type NodeServices } from "./api.ts";
 import { ChainClient } from "./chain.ts";
-import { redactedConfig, type Config } from "./config.ts";
+import { defaultConfirmTag, redactedConfig, type Config } from "./config.ts";
+import { BatchAttester, verifyBatchAttestation } from "./eas.ts";
 import { Database } from "./db/database.ts";
 import { EventBus } from "./events.ts";
 import { FundsTracker } from "./funds.ts";
@@ -37,6 +38,8 @@ export type CreateNodeOptions = {
   workers?: boolean;
   /** Listen on this port instead of config.port (0 = random). */
   port?: number;
+  /** HTTP client for the HSP Coordinator (tests use a fake coordinator). */
+  fetch?: typeof fetch;
 };
 
 /** Builds every service, checks the chain and database agree with the config, recovers interrupted batches, and listens. */
@@ -49,12 +52,18 @@ export async function startNode(config: Config, opts: CreateNodeOptions = {}): P
     hub: config.hub,
     token: config.token,
     operatorKey: config.operatorKey,
+    confirmTag: config.confirmTag ?? defaultConfirmTag(config.chainId),
+    tx: config.tx,
+    rpcRetries: config.rpcRetries,
   });
 
   const rpcChainId = await chain.public.getChainId();
   if (rpcChainId !== config.chainId) throw new Error(`RPC_URL serves chain ${rpcChainId}, expected CHAIN_ID ${config.chainId}`);
   if (!(await chain.isContract(config.hub))) throw new Error(`No contract at HUB_ADDRESS ${config.hub} on chain ${config.chainId}`);
   if (!(await chain.isContract(config.token))) throw new Error(`No contract at TOKEN_ADDRESS ${config.token} on chain ${config.chainId}`);
+  const attester = config.easAttest ? new BatchAttester(chain) : null;
+  if (attester) await attester.assertAvailable();
+  let hspRegistry: Awaited<ReturnType<CoordinatorHspAdapter["init"]>> | null = null;
 
   const db = new Database(config.dbPath);
   let started = false;
@@ -77,22 +86,32 @@ export async function startNode(config: Config, opts: CreateNodeOptions = {}): P
     const events = new EventBus(db);
     const ledger = new Ledger(db);
     const funds = new FundsTracker(store, chain, events, log.child({ component: "funds" }));
-    const hsp: HspPort =
-      opts.hsp ??
-      (config.hsp.mode === "coordinator"
-        ? new CoordinatorHspAdapter({
-            url: config.hsp.coordinatorUrl!,
-            apiKey: config.hsp.apiKey!,
-            chainName: config.hsp.chainName!,
-            verifyingContract: config.hsp.verifyingContract,
-          })
-        : new LocalHspAdapter({
-            chainId: config.chainId,
-            hub: config.hub,
-            verifyingContract: config.hsp.verifyingContract,
-            publicClient: chain.public,
-            adapterAccount: chain.operator,
-          }));
+    let hsp: HspPort;
+    if (opts.hsp) hsp = opts.hsp;
+    else if (config.hsp.mode === "coordinator") {
+      const coordinator = new CoordinatorHspAdapter({
+        url: config.hsp.coordinatorUrl!,
+        apiKey: config.hsp.apiKey!,
+        chainName: config.hsp.chainName,
+        verifyingContract: config.hsp.verifyingContractPinned ? config.hsp.verifyingContract : undefined,
+        requiredCapabilities: config.hsp.requiredCapabilities,
+        fetch: opts.fetch,
+      });
+      // Resolves the registry name and verifyingContract by chain id; refuses to start on a pin mismatch.
+      hspRegistry = await coordinator.init(config.chainId);
+      hsp = coordinator;
+    } else {
+      hsp = new LocalHspAdapter({
+        chainId: config.chainId,
+        hub: config.hub,
+        verifyingContract: config.hsp.verifyingContract,
+        publicClient: chain.public,
+        adapterAccount: chain.operator,
+        verifyAttestation: attester
+          ? (uid, batchId) => verifyBatchAttestation(chain, uid, { batchId, attester: chain.operator.address, hub: chain.hub })
+          : undefined,
+      });
+    }
     const vouchers = new VoucherService({
       db,
       store,
@@ -114,6 +133,7 @@ export async function startNode(config: Config, opts: CreateNodeOptions = {}): P
       hsp,
       log,
       cosignTimeoutSec: config.hsp.cosignTimeoutSec,
+      attester,
     });
     const token = { address: chain.token, ...(await chain.tokenMeta()) };
     const limiters = {
@@ -167,6 +187,8 @@ export async function startNode(config: Config, opts: CreateNodeOptions = {}): P
       every(config.fundsRefreshSec * 1000, "funds refresh", () => funds.sweep());
       every(15_000, "revocation scan", () => mandates.scanRevocations());
       every(15_000, "hsp retry", () => settlement.retryHsp());
+      // About one block: promotes included batches once the CONFIRM_TAG head passes them, and handles reorgs.
+      every(2_000, "finality", () => settlement.trackFinality());
       every(60_000, "retention", async () => prune());
       if (config.settleIntervalSec > 0) {
         every(config.settleIntervalSec * 1000, "auto-settle", async () => {
@@ -185,6 +207,8 @@ export async function startNode(config: Config, opts: CreateNodeOptions = {}): P
       url,
       operator: chain.operator.address,
       migrationsApplied: applied,
+      confirmTag: chain.confirmTag,
+      hspRegistry,
       config: redactedConfig(config),
     });
 

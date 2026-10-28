@@ -88,6 +88,18 @@ const envSchema = z.object({
   HSP_CHAIN_NAME: z.string().min(1).optional(),
   HSP_VERIFYING_CONTRACT: address.optional(),
   HSP_COSIGN_TIMEOUT_SEC: intFromEnv(20),
+  // Comma-separated capabilities written into every HSP mandate in coordinator mode (local mode uses its own set).
+  HSP_REQUIRED_CAPABILITIES: z.string().optional(),
+  // Finality head a settlement must reach before the ledger and HSP are updated. Default: safe on HashKey Chain, latest on anvil.
+  CONFIRM_TAG: z.enum(["latest", "safe", "finalized"]).optional(),
+  // Send a same-nonce replacement with a 12.5 % fee bump when a settlement is not included after this many blocks.
+  TX_BUMP_AFTER_BLOCKS: intFromEnv(5, 1),
+  TX_MAX_BUMPS: intFromEnv(5),
+  TX_INCLUSION_TIMEOUT_SEC: intFromEnv(300, 1),
+  // Retries for transient JSON-RPC failures (network errors, HTTP 429 and 5xx), with exponential backoff and jitter.
+  RPC_RETRIES: intFromEnv(4),
+  // Attest every confirmed batch on EAS (HashKey Chain predeploy). Needs EAS code at the predeploy address.
+  EAS_ATTEST: z.enum(["true", "false"]).default("false"),
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   DEPLOYMENTS_DIR: z.string().optional(),
@@ -126,9 +138,19 @@ export type Config = {
     coordinatorUrl?: string;
     apiKey?: string;
     chainName?: string;
+    /** Local mode: the HSP domain contract (default the hub). Coordinator mode: the pin, checked against GET /chains. */
     verifyingContract: Address;
+    /** True when HSP_VERIFYING_CONTRACT was set explicitly; coordinator mode then refuses to start on a mismatch. */
+    verifyingContractPinned?: boolean;
+    /** Coordinator mode: capabilities committed to in every HSP mandate. */
+    requiredCapabilities?: string[];
     cosignTimeoutSec: number;
   };
+  /** Finality head for settlement batches. */
+  confirmTag?: ConfirmTag;
+  tx?: TxPolicy;
+  rpcRetries?: number;
+  easAttest?: boolean;
   corsOrigins: string[];
   logLevel: "debug" | "info" | "warn" | "error";
   fundsRefreshSec: number;
@@ -142,6 +164,17 @@ export type Config = {
   denials: { dedupWindowSec: number; maxRows: number };
   eventsMaxRows: number;
 };
+
+export type ConfirmTag = "latest" | "safe" | "finalized";
+
+export type TxPolicy = { bumpAfterBlocks: number; maxBumps: number; inclusionTimeoutSec: number };
+
+export const DEFAULT_TX_POLICY: TxPolicy = { bumpAfterBlocks: 5, maxBumps: 5, inclusionTimeoutSec: 300 };
+
+/** HashKey Chain books a settlement as final at the safe head (batch data posted to Ethereum); anvil has no reorgs. */
+export function defaultConfirmTag(chainId: number): ConfirmTag {
+  return LIVE_CHAIN_IDS.includes(chainId) ? "safe" : "latest";
+}
 
 export type RateLimitConfig = {
   provider: { rps: number; burst: number };
@@ -199,8 +232,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (e.HSP_MODE === "coordinator") {
     if (!e.HSP_COORDINATOR_URL) problems.push("HSP_COORDINATOR_URL: required when HSP_MODE=coordinator");
     if (!e.HSP_API_KEY) problems.push("HSP_API_KEY: required when HSP_MODE=coordinator");
-    if (!e.HSP_CHAIN_NAME) problems.push("HSP_CHAIN_NAME: required when HSP_MODE=coordinator");
-    if (!e.HSP_VERIFYING_CONTRACT) problems.push("HSP_VERIFYING_CONTRACT: required when HSP_MODE=coordinator");
+    // HSP_CHAIN_NAME and HSP_VERIFYING_CONTRACT are optional: the node resolves both from GET /chains by chain id,
+    // uses HSP_CHAIN_NAME only as a fallback, and refuses to start when the pinned contract differs.
   }
   const rpcUrl = e.RPC_URL ?? net.chain.rpcUrls.default.http[0];
   if (!rpcUrl) problems.push("RPC_URL: required");
@@ -243,8 +276,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       apiKey: e.HSP_API_KEY,
       chainName: e.HSP_CHAIN_NAME,
       verifyingContract: e.HSP_VERIFYING_CONTRACT ?? hub!,
+      verifyingContractPinned: e.HSP_VERIFYING_CONTRACT !== undefined,
+      requiredCapabilities: (e.HSP_REQUIRED_CAPABILITIES ?? "")
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean),
       cosignTimeoutSec: e.HSP_COSIGN_TIMEOUT_SEC,
     },
+    confirmTag: e.CONFIRM_TAG ?? defaultConfirmTag(e.CHAIN_ID),
+    tx: { bumpAfterBlocks: e.TX_BUMP_AFTER_BLOCKS, maxBumps: e.TX_MAX_BUMPS, inclusionTimeoutSec: e.TX_INCLUSION_TIMEOUT_SEC },
+    rpcRetries: e.RPC_RETRIES,
+    easAttest: e.EAS_ATTEST === "true",
     corsOrigins: e.CORS_ORIGINS.split(",")
       .map((s) => s.trim())
       .filter(Boolean),
@@ -283,6 +325,9 @@ export function redactedConfig(c: Config) {
     hspCoordinatorUrl: c.hsp.coordinatorUrl,
     hspVerifyingContract: c.hsp.verifyingContract,
     hspCosignTimeoutSec: c.hsp.cosignTimeoutSec,
+    confirmTag: c.confirmTag ?? defaultConfirmTag(c.chainId),
+    tx: c.tx ?? DEFAULT_TX_POLICY,
+    easAttest: c.easAttest ?? false,
     corsOrigins: c.corsOrigins,
   };
 }

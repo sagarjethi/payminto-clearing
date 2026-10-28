@@ -94,6 +94,14 @@ const createMandateSchema = z.object({
   policy: policySchema,
   payees: z.array(zAddress).max(1024),
   label: z.string().trim().min(1).max(120),
+  /** Optional EIP-2612 permit by the agent for the hub: opened with openMandateWithPermit, so the agent sends nothing. */
+  permit: z
+    .object({
+      value: zUintBig,
+      deadline: zUintBig,
+      signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/, "must be a 65-byte signature").transform((v) => v as Hex),
+    })
+    .optional(),
 });
 
 const createProviderSchema = z.object({
@@ -329,9 +337,21 @@ export function createApi(s: NodeServices): Hono<Vars> {
       ...(gas !== null ? { operatorGasBalance: gas.toString() } : {}),
       publicUrl: config.publicUrl,
       hspMode: config.hsp.mode,
-      hsp: { mode: config.hsp.mode, verifyingContract: config.hsp.verifyingContract, cosignTimeoutSec: config.hsp.cosignTimeoutSec },
+      hsp: {
+        mode: config.hsp.mode,
+        verifyingContract: s.settlement.hsp.verifyingContract,
+        requiredCapabilities: s.settlement.hsp.requiredCapabilities,
+        cosignTimeoutSec: config.hsp.cosignTimeoutSec,
+      },
       settleIntervalSec: config.settleIntervalSec,
-      settlement: { intervalSec: config.settleIntervalSec, minCalls: config.settleMinCalls, maxClaimsPerBatch: 64 },
+      settlement: {
+        intervalSec: config.settleIntervalSec,
+        minCalls: config.settleMinCalls,
+        maxClaimsPerBatch: 64,
+        /** Head a batch must reach before it is confirmed and booked (latest, safe or finalized). */
+        confirmTag: chain.confirmTag,
+        easAttest: config.easAttest ?? false,
+      },
     });
   });
 

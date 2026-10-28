@@ -108,11 +108,13 @@ describe("config on live networks", () => {
 });
 
 describe("revocation scan start", () => {
-  function fakeChain(head: bigint, ranges: Array<[bigint, bigint]>) {
+  /** `head` is the finality head (CONFIRM_TAG); `latest` runs ahead of it like on HashKey Chain. */
+  function fakeChain(head: bigint, ranges: Array<[bigint, bigint]>, latest = head) {
     return {
       hub: HUB,
+      headOf: async () => head,
       public: {
-        getBlockNumber: async () => head,
+        getBlockNumber: async () => latest,
         getLogs: async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
           ranges.push([fromBlock, toBlock]);
           return [];
@@ -121,11 +123,11 @@ describe("revocation scan start", () => {
     } as unknown as ChainClient;
   }
 
-  function service(dbFile: string, fromBlock: bigint, head: bigint, ranges: Array<[bigint, bigint]>) {
+  function service(dbFile: string, fromBlock: bigint, head: bigint, ranges: Array<[bigint, bigint]>, latest = head) {
     const db = new Database(join(tmp.dir, dbFile));
     db.migrate();
     const store = new Store(db);
-    const svc = new MandateService({ db, store, chain: fakeChain(head, ranges), events: new EventBus(db), log: silentLogger, fromBlock });
+    const svc = new MandateService({ db, store, chain: fakeChain(head, ranges, latest), events: new EventBus(db), log: silentLogger, fromBlock });
     return { db, store, svc };
   }
 
@@ -138,6 +140,16 @@ describe("revocation scan start", () => {
     for (const [f, t] of ranges) expect(t - f + 1n).toBeLessThanOrEqual(5_001n);
     expect(ranges.at(-1)![1]).toBe(35_012_000n);
     expect(store.getMeta("revocations_scanned_block")).toBe("35012000");
+    db.close();
+  });
+
+  it("reads only up to the finality head, never the unsafe tip", async () => {
+    const ranges: Array<[bigint, bigint]> = [];
+    // Testnet: the safe head trails latest by about 300 blocks.
+    const { db, store, svc } = service("scan-safe.test.db", 35_000_000n, 35_009_700n, ranges, 35_010_000n);
+    await svc.scanRevocations();
+    expect(ranges.at(-1)![1]).toBe(35_009_700n);
+    expect(store.getMeta("revocations_scanned_block")).toBe("35009700");
     db.close();
   });
 

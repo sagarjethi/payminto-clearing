@@ -81,7 +81,7 @@ export type DenialRow = {
   last_seen: number | null;
 };
 
-export type BatchStatus = "building" | "cosigning" | "submitted" | "confirmed" | "failed";
+export type BatchStatus = "building" | "cosigning" | "submitted" | "included" | "confirmed" | "failed";
 
 export type BatchRow = {
   seq: number;
@@ -106,6 +106,14 @@ export type BatchRow = {
   created_at: string;
   submitted_at: string | null;
   confirmed_at: string | null;
+  l1_fee: string | null;
+  included_at: string | null;
+  block_hash: Hex | null;
+  tx_nonce: number | null;
+  raw_tx: Hex | null;
+  replacements: number;
+  attestation_uid: Hex | null;
+  attestation_tx: Hex | null;
 };
 
 export type BatchClaimRow = {
@@ -301,11 +309,21 @@ export function batchSummaryJson(r: BatchRow, chainId: number) {
     explorerUrl: r.tx_hash ? explorerTx(chainId, r.tx_hash) : null,
     blockNumber: r.block_number,
     gasUsed: r.gas_used,
+    /** OP Stack L1 data fee paid by the settlement transaction (wei); null until included or off OP Stack chains. */
+    l1Fee: r.l1_fee,
+    /** Same-nonce fee bumps sent before the transaction was included. */
+    replacements: r.replacements,
     error: r.error,
     trigger: r.trigger,
     createdAt: r.created_at,
     submittedAt: r.submitted_at,
+    /** One confirmation; `confirmedAt` follows once the block is at or below the configured finality head. */
+    includedAt: r.included_at,
     confirmedAt: r.confirmed_at,
+    /** EAS attestation of the confirmed batch, when EAS_ATTEST=true. */
+    attestation: r.attestation_uid
+      ? { uid: r.attestation_uid, txHash: r.attestation_tx, explorerUrl: r.attestation_tx ? explorerTx(chainId, r.attestation_tx) : null }
+      : null,
   };
 }
 export type BatchSummaryJson = ReturnType<typeof batchSummaryJson>;

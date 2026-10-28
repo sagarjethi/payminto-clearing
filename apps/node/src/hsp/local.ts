@@ -136,13 +136,23 @@ export class LocalHspAdapter implements HspPort {
   readonly #hub: Address;
   readonly #client: PublicClient;
   readonly #adapter: LocalAccount;
+  readonly #verifyAttestation: ((uid: Hex, batchId: Hex) => Promise<boolean>) | null;
 
-  constructor(opts: { chainId: number; hub: Address; verifyingContract: Address; publicClient: PublicClient; adapterAccount: LocalAccount }) {
+  constructor(opts: {
+    chainId: number;
+    hub: Address;
+    verifyingContract: Address;
+    publicClient: PublicClient;
+    adapterAccount: LocalAccount;
+    /** EAS_ATTEST=true: checks the batch attestation on chain; a valid one adds ATTEST_CAPABILITY to the satisfied set. */
+    verifyAttestation?: (uid: Hex, batchId: Hex) => Promise<boolean>;
+  }) {
     this.#chainId = opts.chainId;
     this.#hub = opts.hub;
     this.verifyingContract = opts.verifyingContract;
     this.#client = opts.publicClient;
     this.#adapter = opts.adapterAccount;
+    this.#verifyAttestation = opts.verifyAttestation ?? null;
   }
 
   async settle(input: HspSettleInput): Promise<HspSettleOutcome> {
@@ -162,6 +172,10 @@ export class LocalHspAdapter implements HspPort {
       if (signed) satisfied.push(CAPABILITIES.mandateBound);
       if (obs.nettingBatch && input.body.settlementBinding.toLowerCase() === input.batchId.toLowerCase()) {
         satisfied.push(CAPABILITIES.nettingBatch);
+      }
+      // Optional, not required: an extra capability a verifier may ask for. Checked on chain, never taken on trust.
+      if (input.attestationUid && this.#verifyAttestation && (await this.#verifyAttestation(input.attestationUid, input.batchId))) {
+        satisfied.push(CAPABILITIES.batchAttested);
       }
       const base = { paymentId: input.paymentId, txHash: input.txHash, logIndex: obs.logIndex ?? 0, satisfiedCapabilities: satisfied };
       const signature = await this.#adapter.signTypedData(receiptTypedData(this.#chainId, this.verifyingContract, base));

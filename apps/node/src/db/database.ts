@@ -46,10 +46,22 @@ export class Database {
       const version = parseInt(file, 10);
       if (applied.has(version)) continue;
       const sql = readFileSync(join(dir, file), "utf8");
-      this.tx(() => {
-        this.raw.exec(sql);
-        this.run("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)", version, file, new Date().toISOString());
-      });
+      // A migration that rebuilds a referenced table must run with foreign keys off (SQLite's 12-step procedure).
+      // The pragma is a no-op inside a transaction, so it is switched around it, and the result is checked before commit.
+      const fkOff = /^-- migrate: foreign-keys-off\s*$/m.test(sql.split("\n", 1)[0] ?? "");
+      if (fkOff) this.raw.exec("PRAGMA foreign_keys = OFF");
+      try {
+        this.tx(() => {
+          this.raw.exec(sql);
+          if (fkOff) {
+            const broken = this.all<Record<string, unknown>>("PRAGMA foreign_key_check");
+            if (broken.length) throw new Error(`migration ${file} breaks ${broken.length} foreign key reference(s)`);
+          }
+          this.run("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)", version, file, new Date().toISOString());
+        });
+      } finally {
+        if (fkOff) this.raw.exec("PRAGMA foreign_keys = ON");
+      }
       count++;
     }
     return count;

@@ -7,6 +7,7 @@ export const EVENT_TYPES = [
   "mandate.revoked",
   "batch.started",
   "batch.submitted",
+  "batch.included",
   "batch.confirmed",
   "batch.failed",
   "hsp.updated",

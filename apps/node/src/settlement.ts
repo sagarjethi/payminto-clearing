@@ -1,5 +1,6 @@
 import {
   encodeAbiParameters,
+  encodeFunctionData,
   getAddress,
   isAddressEqual,
   keccak256,
@@ -21,7 +22,8 @@ import {
   type CallReceipt,
   type HspWireMandate,
 } from "@payminto/protocol";
-import type { ChainClient } from "./chain.ts";
+import { ChainClient } from "./chain.ts";
+import type { BatchAttester } from "./eas.ts";
 import type { Database } from "./db/database.ts";
 import { ApiError } from "./errors.ts";
 import type { EventBus } from "./events.ts";
@@ -96,6 +98,10 @@ export class SettlementService {
   readonly #hsp: HspPort;
   readonly #log: Logger;
   readonly #cosignTimeoutMs: number;
+  readonly #attester: BatchAttester | null;
+  /** Batches whose sender is still waiting for inclusion in this process; the finality tracker leaves them alone. */
+  readonly #sending = new Set<number>();
+  #tracking = false;
   #running: Promise<SettleResult> | null = null;
   readonly #cosignWaiters = new Map<number, () => void>();
   #hspRetrying = false;
@@ -110,6 +116,8 @@ export class SettlementService {
     hsp: HspPort;
     log: Logger;
     cosignTimeoutSec: number;
+    /** EAS_ATTEST=true: attests every confirmed batch before the HSP step. */
+    attester?: BatchAttester | null;
   }) {
     this.#db = deps.db;
     this.#store = deps.store;
@@ -120,6 +128,12 @@ export class SettlementService {
     this.#hsp = deps.hsp;
     this.#log = deps.log.child({ component: "settlement" });
     this.#cosignTimeoutMs = deps.cosignTimeoutSec * 1000;
+    this.#attester = deps.attester ?? null;
+  }
+
+  /** The HSP seam in use (local adapter or Coordinator), for /v1/info. */
+  get hsp(): HspPort {
+    return this.#hsp;
   }
 
   get running(): boolean {
@@ -156,6 +170,13 @@ export class SettlementService {
         r.cumulative,
       );
       if (!last) continue; // already in a batch that is being settled
+      // A pair with calls in an unconfirmed batch waits: its on-chain settled position moves only when that batch lands.
+      const inFlight = this.#db.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM calls WHERE mandate_id = ? AND payee = ? AND status = 'settling'",
+        r.mandate_id,
+        r.payee,
+      )!.n;
+      if (inFlight > 0) continue;
       const calls = this.#db.get<{ n: number }>(
         "SELECT COUNT(*) AS n FROM calls WHERE mandate_id = ? AND payee = ? AND status = 'accepted'",
         r.mandate_id,
@@ -250,6 +271,7 @@ export class SettlementService {
         drop(c, `on-chain settled ${settledOnchain[i]} differs from node position ${c.settled}`);
       }
     }
+    await this.#screenBlacklist(cands, drop);
     for (const d of dropped) this.#funds.warn({ mandateId: d.mandateId, payee: d.payee, reason: d.reason });
 
     const batchIds: Hex[] = [];
@@ -265,6 +287,23 @@ export class SettlementService {
       batches: batchIds.map((id) => batchSummaryJson(this.#store.batch(id)!, chain.chainId)),
       dropped,
     };
+  }
+
+  /**
+   * FiatToken screening (USDC.e): a blacklisted sender or recipient makes transferFrom revert, which would revert the
+   * whole netting batch. Every party is checked in one Multicall3 read; claims touching a blacklisted address are
+   * dropped (all claims of a blacklisted agent's mandates, and every claim paying a blacklisted payee).
+   */
+  async #screenBlacklist(cands: Candidate[], drop: (c: Candidate, reason: string) => void): Promise<void> {
+    if (cands.length === 0) return;
+    const parties = cands.flatMap((c) => [c.agent, c.payee]);
+    const black = await this.#chain.blacklisted(parties);
+    if (black.size === 0) return;
+    for (const c of [...cands]) {
+      if (black.has(c.agent.toLowerCase())) drop(c, `agent ${c.agent} is blacklisted by the settlement token`);
+      else if (black.has(c.payee.toLowerCase())) drop(c, `payee ${c.payee} is blacklisted by the settlement token`);
+    }
+    this.#log.warn("blacklisted parties left out of the batch", { parties: [...black] });
   }
 
   /** Drops every claim of an agent whose wallet cannot pay its projected net debit, until the projection is fundable. */
@@ -399,32 +438,193 @@ export class SettlementService {
           payeeProof: c.payees.length ? payeeProof(c.payees, c.payee) : [],
         })),
       ] as const;
-      const txHash = await chain.txQueue.run(async () => {
-        const { request } = await chain.public.simulateContract({
-          address: chain.hub,
-          abi: clearingHubAbi,
-          functionName: "settleBatch",
-          args,
-          account: chain.operator,
-        });
-        return chain.wallet.writeContract(request);
+      await chain.public.simulateContract({
+        address: chain.hub,
+        abi: clearingHubAbi,
+        functionName: "settleBatch",
+        args,
+        account: chain.operator,
       });
-      db.tx(() => {
-        this.#store.updateBatch(seq, { status: "submitted", tx_hash: txHash, submitted_at: nowIso() });
-        this.#events.emit("batch.submitted", { batch: batchSummaryJson(this.#store.batch(String(seq))!, chain.chainId) });
-      });
-      log.info("batch submitted", { txHash });
-
-      const receipt = await chain.waitForReceipt(txHash);
-      if (receipt.status !== "success") throw new Error(`settleBatch reverted in ${txHash}`);
-      await this.#finalize(seq, receipt);
+      const data = encodeFunctionData({ abi: clearingHubAbi, functionName: "settleBatch", args });
+      this.#sending.add(seq);
+      let receipt: TransactionReceipt;
+      try {
+        receipt = await chain.send(
+          { to: chain.hub, data },
+          {
+            // Persist every broadcast before waiting, so a restart or a reorg can find and rebroadcast it.
+            onSent: (tx) =>
+              db.tx(() => {
+                const first = tx.replacement === 0;
+                this.#store.updateBatch(seq, {
+                  status: "submitted",
+                  tx_hash: tx.hash,
+                  raw_tx: tx.raw,
+                  tx_nonce: tx.nonce,
+                  replacements: tx.replacement,
+                  ...(first ? { submitted_at: nowIso() } : {}),
+                });
+                this.#events.emit("batch.submitted", { batch: batchSummaryJson(this.#store.batch(String(seq))!, chain.chainId) });
+                if (first) log.info("batch submitted", { txHash: tx.hash, nonce: tx.nonce });
+                else log.warn("settlement not included yet; sent a same-nonce replacement with higher fees", { txHash: tx.hash, replacement: tx.replacement });
+              }),
+          },
+        );
+      } finally {
+        this.#sending.delete(seq);
+      }
+      if (receipt.status !== "success") throw new Error(`settleBatch reverted in ${receipt.transactionHash}`);
+      this.#markIncluded(seq, receipt);
+      // CONFIRM_TAG=latest (anvil): one confirmation is final. Otherwise the finality tracker confirms it later.
+      if (chain.confirmTag === "latest") await this.#finalize(seq, receipt);
       return batchId;
     } catch (err) {
       const row = this.#store.batch(String(seq))!;
-      if (row.status === "confirmed") throw err;
+      if (row.status === "confirmed" || row.status === "included") throw err;
+      if (row.status === "submitted") {
+        // Broadcast but not seen included (timeout or a nonce taken by another sender): leave it to the tracker,
+        // which rebroadcasts or fails it safely. Never return its calls while the transaction may still be mined.
+        this.#store.updateBatch(seq, { error: errMessage(err) });
+        log.error("batch not included yet; the finality tracker keeps watching it", { err });
+        return batchId;
+      }
       this.#fail(seq, errMessage(err));
       log.error("batch failed", { err });
       return batchId;
+    }
+  }
+
+  /** One confirmation: records block, gas and the L1 data fee. The ledger and HSP wait for finality. */
+  #markIncluded(seq: number, receipt: TransactionReceipt): void {
+    const l1 = ChainClient.l1FeeOf(receipt);
+    this.#db.tx(() => {
+      this.#store.updateBatch(seq, {
+        status: "included",
+        tx_hash: receipt.transactionHash,
+        block_number: Number(receipt.blockNumber),
+        block_hash: receipt.blockHash,
+        gas_used: receipt.gasUsed.toString(),
+        gas_price: receipt.effectiveGasPrice?.toString() ?? null,
+        l1_fee: l1 === null ? null : l1.toString(),
+        included_at: nowIso(),
+        error: null,
+      });
+      this.#events.emit("batch.included", { batch: batchSummaryJson(this.#store.batch(String(seq))!, this.#chain.chainId) });
+    });
+    this.#log.info("batch included", { seq, txHash: receipt.transactionHash, block: receipt.blockNumber, confirmTag: this.#chain.confirmTag });
+  }
+
+  /**
+   * Finality tracker (every block or so). Promotes included batches whose block is at or below the CONFIRM_TAG head,
+   * follows a batch whose transaction moved to another block, and handles one that a reorg removed: its signed
+   * transaction is rebroadcast with the same nonce; if that nonce now belongs to another transaction and the hub has
+   * no record of the batch, the batch can never land, so it fails and its calls return to the next batch.
+   * Also picks up submitted batches whose sender is gone (restart) and retries missing EAS attestations.
+   */
+  async trackFinality(): Promise<void> {
+    if (this.#tracking) return;
+    this.#tracking = true;
+    try {
+      const chain = this.#chain;
+      const open = this.#db.all<BatchRow>("SELECT * FROM batches WHERE status IN ('submitted', 'included') ORDER BY seq");
+      if (open.length === 0) return this.#retryAttestations();
+      const head = await chain.headOf();
+      for (const b of open) {
+        if (this.#sending.has(b.seq) || !b.tx_hash) continue;
+        const receipt = await chain.receiptOf(b.tx_hash);
+        if (!receipt) {
+          await this.#handleMissing(b);
+          continue;
+        }
+        if (receipt.status !== "success") {
+          if (b.status === "submitted") this.#fail(b.seq, `settleBatch reverted in ${receipt.transactionHash}`);
+          else this.#log.error("included settlement now reports a revert; waiting for the chain to settle down", { seq: b.seq });
+          continue;
+        }
+        if (b.status === "submitted" || receipt.blockHash !== b.block_hash) this.#markIncluded(b.seq, receipt);
+        if (receipt.blockNumber <= head) await this.#finalize(b.seq, receipt);
+      }
+      await this.#retryAttestations();
+    } finally {
+      this.#tracking = false;
+    }
+  }
+
+  /** A submitted or included batch whose transaction the node no longer knows (reorged out, or dropped). */
+  async #handleMissing(b: BatchRow): Promise<void> {
+    const chain = this.#chain;
+    const onchain = await chain.onchainBatch(b.batch_id);
+    if (onchain.settledAt !== 0n) {
+      // The hub has the batch: an earlier broadcast or a replacement landed. Find it from the BatchSettled log.
+      const hash = await this.#findSettlementTx(b.batch_id);
+      if (hash) {
+        const r = await chain.receiptOf(hash);
+        if (r && r.status === "success") this.#markIncluded(b.seq, r);
+      }
+      return;
+    }
+    if (b.status === "included") {
+      this.#db.tx(() => {
+        this.#store.updateBatch(b.seq, { status: "submitted", block_number: null, block_hash: null, error: "reorged out; rebroadcasting the same transaction" });
+        this.#events.emit("batch.submitted", { batch: batchSummaryJson(this.#store.batch(String(b.seq))!, chain.chainId) });
+      });
+      this.#log.warn("settlement transaction reorged out; rebroadcasting", { seq: b.seq, txHash: b.tx_hash });
+    }
+    if (!b.raw_tx) {
+      this.#fail(b.seq, `transaction ${b.tx_hash} not found and no signed copy to rebroadcast`);
+      return;
+    }
+    const outcome = await chain.rebroadcast(b.raw_tx);
+    if (outcome === "nonce-used") {
+      // Re-check the hub after the nonce answer: only a batch the hub does not know may return its calls.
+      const again = await chain.onchainBatch(b.batch_id);
+      if (again.settledAt === 0n) this.#fail(b.seq, `transaction ${b.tx_hash} was dropped and its nonce reused; the calls go into the next batch`);
+    }
+  }
+
+  /** The transaction that emitted BatchSettled(batchId), searched in the last 5,000 blocks (the eth_getLogs limit). */
+  async #findSettlementTx(batchId: Hex): Promise<Hex | null> {
+    const chain = this.#chain;
+    const latest = await chain.public.getBlockNumber();
+    const logs = await chain.public.getLogs({
+      address: chain.hub,
+      event: clearingHubAbi.find((x) => x.type === "event" && x.name === "BatchSettled") as Extract<
+        (typeof clearingHubAbi)[number],
+        { type: "event"; name: "BatchSettled" }
+      >,
+      args: { batchId },
+      fromBlock: latest > 5_000n ? latest - 5_000n : 0n,
+      toBlock: latest,
+    });
+    return logs[0]?.transactionHash ?? null;
+  }
+
+  async #retryAttestations(): Promise<void> {
+    if (!this.#attester) return;
+    const rows = this.#db.all<BatchRow>("SELECT * FROM batches WHERE status = 'confirmed' AND attestation_uid IS NULL ORDER BY seq LIMIT 5");
+    for (const b of rows) await this.#attest(b.seq);
+  }
+
+  /** EAS attestation of a confirmed batch. Failures are logged and retried; they never touch the ledger. */
+  async #attest(seq: number): Promise<void> {
+    if (!this.#attester) return;
+    const b = this.#store.batch(String(seq))!;
+    if (b.attestation_uid || b.status !== "confirmed") return;
+    try {
+      const a = await this.#attester.attest(this.#chain.hub, {
+        batchId: b.batch_id,
+        receiptsRoot: b.receipts_root!,
+        gross: BigInt(b.gross),
+        net: BigInt(b.net),
+        transfers: BigInt(b.transfers),
+      });
+      this.#db.tx(() => {
+        this.#store.updateBatch(seq, { attestation_uid: a.uid, attestation_tx: a.txHash });
+        this.#events.emit("batch.confirmed", { batch: batchSummaryJson(this.#store.batch(String(seq))!, this.#chain.chainId) });
+      });
+      this.#log.info("batch attested on EAS", { seq, uid: a.uid, txHash: a.txHash });
+    } catch (err) {
+      this.#log.warn("EAS attestation failed; will retry", { seq, err });
     }
   }
 
@@ -583,7 +783,9 @@ export class SettlementService {
     );
     const walletOf = (a: Address) => (knownAgents.has(a.toLowerCase()) ? accounts.agentWallet(a) : accounts.providerWallet(a));
 
-    db.tx(() => {
+    const booked = db.tx(() => {
+      // Exactly once: the inline path (CONFIRM_TAG=latest) and the finality tracker can both get here.
+      if (this.#store.batch(String(seq))!.status !== "included") return false;
       if (!reconciled) {
         db.run("DELETE FROM net_transfers WHERE batch_seq = ?", seq);
         actual.forEach((t, i) =>
@@ -607,8 +809,6 @@ export class SettlementService {
         transfers: Number(settledEv.args.transfers as bigint),
         reconciled: reconciled ? 1 : 0,
         block_number: Number(receipt.blockNumber),
-        gas_used: receipt.gasUsed.toString(),
-        gas_price: receipt.effectiveGasPrice?.toString() ?? null,
         confirmed_at: nowIso(),
         error: reconciled ? null : "on-chain net transfers differ from the projection; chain values recorded",
       });
@@ -637,12 +837,16 @@ export class SettlementService {
         this.#store.updateHsp(h.id, { tx_hash: receipt.transactionHash, log_index: lg?.logIndex ?? null });
       }
       this.#events.emit("batch.confirmed", { batch: batchSummaryJson(this.#store.batch(String(seq))!, chain.chainId) });
+      return true;
     });
+    if (!booked) return;
     this.#log.info("batch confirmed", {
       seq,
       txHash: receipt.transactionHash,
       transfers: actual.length,
       gasUsed: receipt.gasUsed,
+      l1Fee: ChainClient.l1FeeOf(receipt),
+      confirmTag: chain.confirmTag,
       reconciled,
     });
 
@@ -650,7 +854,9 @@ export class SettlementService {
     const parties = new Set([...actual.flatMap((t) => [t.from, t.to])]);
     for (const p of parties) this.#funds.refresh(p).catch(() => undefined);
 
-    // HSP step for each net transfer. Failures are recorded and retried; they never touch the clearing ledger.
+    // Optional EAS attestation, then the HSP step for each net transfer. Failures are recorded and retried;
+    // they never touch the clearing ledger.
+    await this.#attest(seq);
     await this.#runHsp(this.#store.hspOfBatch(seq).filter((h) => h.status === "COSIGNED" || h.status === "UNSIGNED"));
   }
 
@@ -665,6 +871,7 @@ export class SettlementService {
         txHash: batch.tx_hash,
         batchId: batch.batch_id,
         coordinatorId: h.coordinator_id,
+        attestationUid: batch.attestation_uid,
       });
       const attempts = h.attempts + 1;
       const retry = !!outcome.retry && attempts < HSP_MAX_ATTEMPTS;
@@ -708,23 +915,18 @@ export class SettlementService {
     }
   }
 
-  /** Startup recovery for batches interrupted by a crash or restart. */
+  /**
+   * Startup recovery for batches interrupted by a crash or restart. Batches that never reached the chain fail and
+   * return their calls; submitted and included ones are handed to the finality tracker, which finds their receipt,
+   * rebroadcasts the stored signed transaction, or fails them only once they can no longer land.
+   */
   async recover(): Promise<void> {
-    const open = this.#db.all<BatchRow>("SELECT * FROM batches WHERE status IN ('building', 'cosigning', 'submitted') ORDER BY seq");
-    for (const b of open) {
-      if (b.status !== "submitted" || !b.tx_hash) {
-        this.#fail(b.seq, "node restarted before the batch was submitted");
-        continue;
-      }
-      try {
-        const receipt = await this.#chain.waitForReceipt(b.tx_hash, 30_000);
-        if (receipt.status === "success") await this.#finalize(b.seq, receipt);
-        else this.#fail(b.seq, `settleBatch reverted in ${b.tx_hash}`);
-      } catch (err) {
-        const onchain = await this.#chain.onchainBatch(b.batch_id).catch(() => null);
-        if (onchain && onchain.settledAt === 0n) this.#fail(b.seq, `transaction ${b.tx_hash} not found after restart`);
-        else this.#log.error("could not recover submitted batch; will retry on next start", { seq: b.seq, err });
-      }
+    const open = this.#db.all<BatchRow>("SELECT * FROM batches WHERE status IN ('building', 'cosigning') ORDER BY seq");
+    for (const b of open) this.#fail(b.seq, "node restarted before the batch was submitted");
+    try {
+      await this.trackFinality();
+    } catch (err) {
+      this.#log.error("could not check in-flight batches at startup; the tracker retries", { err });
     }
   }
 }

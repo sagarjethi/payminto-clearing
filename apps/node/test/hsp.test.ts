@@ -36,40 +36,63 @@ const TX = keccak256(toBytes("tx-7"));
 const body = (required: readonly string[] = LOCAL_REQUIRED_CAPABILITIES) =>
   buildNetTransferMandate({ payer: PAYER.address, recipient: RECIPIENT, token: TOKEN, amount: 350_000n, chainId: 31337, batchId: BATCH, deadline: 1_900_000_000n, requiredCapabilities: required });
 
-describe("coordinator HSP adapter", () => {
-  function fakeCoordinator(script: { register?: number; observe202?: number; statuses?: string[] }) {
-    const seen: Array<{ method: string; path: string; auth: string | undefined; body: unknown }> = [];
-    let observeCalls = 0;
-    let getCalls = 0;
-    const app = new Hono();
-    app.use("*", async (c, next) => {
-      const text = c.req.method === "POST" ? await c.req.raw.clone().text() : "";
-      seen.push({ method: c.req.method, path: c.req.path, auth: c.req.header("authorization"), body: text ? JSON.parse(text) : null });
-      await next();
-    });
-    app.post("/payments", (c) => (script.register && script.register >= 300 ? c.json({ error: "x" }, script.register as 500) : c.json({ paymentId: "pay_1", status: "PROPOSED" }, 201)));
-    app.post("/payments/:id/observe", (c) => (++observeCalls <= (script.observe202 ?? 0) ? c.json({ status: "pending" }, 202) : c.json({ ok: true })));
-    app.get("/payments/:id", (c) => {
-      const s = script.statuses ?? ["SETTLED"];
-      return c.json({ status: s[Math.min(getCalls++, s.length - 1)] });
-    });
-    const fetchFn = ((input: RequestInfo | URL, init?: RequestInit) => app.request(String(input), init)) as typeof fetch;
-    return {
-      seen,
-      adapter: new CoordinatorHspAdapter({
-        url: "https://coordinator.example",
-        apiKey: "hsp-test-key",
-        chainName: "hashkey-testnet",
-        verifyingContract: HUB,
-        fetch: fetchFn,
-        backoffMs: [1, 1, 1],
-        sleep: async () => {},
-      }),
-    };
-  }
+type Script = {
+  register?: number;
+  observe202?: number;
+  statuses?: string[];
+  chains?: unknown;
+  chainsStatus?: number;
+  pinned?: Address;
+  chainName?: string;
+  required?: string[];
+};
+const REGISTRY = [
+  { name: "hashkey", chainId: 177, verifyingContract: "0x00000000000000000000000000000000000000AA", stablecoin: { symbol: "USDC.e" }, confirmations: 12 },
+  { name: "hashkey-testnet", chainId: "133", verifyingContract: HUB, adapterAddress: ADAPTER.address, confirmations: 1 },
+];
+async function ready(script: Script = {}) {
+  const f = fakeCoordinator(script);
+  await f.adapter.init(133);
+  f.seen.length = 0;
+  return f;
+}
+function fakeCoordinator(script: Script) {
+  const seen: Array<{ method: string; path: string; auth: string | undefined; body: unknown }> = [];
+  let observeCalls = 0;
+  let getCalls = 0;
+  const app = new Hono();
+  app.use("*", async (c, next) => {
+    const text = c.req.method === "POST" ? await c.req.raw.clone().text() : "";
+    seen.push({ method: c.req.method, path: c.req.path, auth: c.req.header("authorization"), body: text ? JSON.parse(text) : null });
+    await next();
+  });
+  app.post("/payments", (c) => (script.register && script.register >= 300 ? c.json({ error: "x" }, script.register as 500) : c.json({ paymentId: "pay_1", status: "PROPOSED" }, 201)));
+  app.post("/payments/:id/observe", (c) => (++observeCalls <= (script.observe202 ?? 0) ? c.json({ status: "pending" }, 202) : c.json({ ok: true })));
+  app.get("/chains", (c) => c.json(script.chains ?? REGISTRY, (script.chainsStatus ?? 200) as 200));
+  app.get("/payments/:id", (c) => {
+    const s = script.statuses ?? ["SETTLED"];
+    return c.json({ status: s[Math.min(getCalls++, s.length - 1)] });
+  });
+  const fetchFn = ((input: RequestInfo | URL, init?: RequestInit) => app.request(String(input), init)) as typeof fetch;
+  return {
+    seen,
+    adapter: new CoordinatorHspAdapter({
+      url: "https://coordinator.example",
+      apiKey: "hsp-test-key",
+      chainName: script.chainName,
+      verifyingContract: script.pinned,
+      requiredCapabilities: script.required,
+      fetch: fetchFn,
+      backoffMs: [1, 1, 1],
+      sleep: async () => {},
+    }),
+  };
+}
 
+describe("coordinator HSP adapter", () => {
   it("registers, observes through 202s, and polls until SETTLED", async () => {
-    const { adapter, seen } = fakeCoordinator({ observe202: 2, statuses: ["ATTEMPTED", "SETTLED"] });
+    const { adapter, seen } = await ready({ observe202: 2, statuses: ["ATTEMPTED", "SETTLED"], chainName: "configured-name" });
+    expect(adapter.chainName).toBe("hashkey-testnet"); // the registry wins over the fallback name
     const b = body([]);
     const out = await adapter.settle({ paymentId: hspPaymentId(31337, HUB, b), body: b, signerProof: "0x1234", txHash: TX, batchId: BATCH });
     expect(out).toMatchObject({ status: "SETTLED", coordinatorId: "pay_1", coordinatorStatus: "SETTLED" });
@@ -95,7 +118,7 @@ describe("coordinator HSP adapter", () => {
   });
 
   it("resumes an earlier registration instead of registering twice", async () => {
-    const { adapter, seen } = fakeCoordinator({});
+    const { adapter, seen } = await ready({});
     const b = body([]);
     const out = await adapter.settle({ paymentId: hspPaymentId(31337, HUB, b), body: b, signerProof: "0x12", txHash: TX, batchId: BATCH, coordinatorId: "pay_1" });
     expect(out.status).toBe("SETTLED");
@@ -105,14 +128,48 @@ describe("coordinator HSP adapter", () => {
   it("reports retryable failures and terminal statuses, and never submits without a co-signature", async () => {
     const b = body([]);
     const input = { paymentId: hspPaymentId(31337, HUB, b), body: b, signerProof: "0x12" as Hex, txHash: TX, batchId: BATCH };
-    expect(await fakeCoordinator({ register: 503 }).adapter.settle(input)).toMatchObject({ status: "FAILED", retry: true });
-    expect(await fakeCoordinator({ register: 400 }).adapter.settle(input)).toMatchObject({ status: "FAILED", retry: false });
-    expect(await fakeCoordinator({ statuses: ["DISPUTED"] }).adapter.settle(input)).toMatchObject({ status: "FAILED", coordinatorStatus: "DISPUTED" });
-    expect(await fakeCoordinator({ observe202: 99 }).adapter.settle(input)).toMatchObject({ status: "SUBMITTED", retry: true });
-    expect(await fakeCoordinator({ statuses: ["ATTEMPTED"] }).adapter.settle(input)).toMatchObject({ status: "SUBMITTED", retry: true });
-    const { adapter, seen } = fakeCoordinator({});
+    expect(await (await ready({ register: 503 })).adapter.settle(input)).toMatchObject({ status: "FAILED", retry: true });
+    expect(await (await ready({ register: 400 })).adapter.settle(input)).toMatchObject({ status: "FAILED", retry: false });
+    expect(await (await ready({ statuses: ["DISPUTED"] })).adapter.settle(input)).toMatchObject({ status: "FAILED", coordinatorStatus: "DISPUTED" });
+    expect(await (await ready({ observe202: 99 })).adapter.settle(input)).toMatchObject({ status: "SUBMITTED", retry: true });
+    expect(await (await ready({ statuses: ["ATTEMPTED"] })).adapter.settle(input)).toMatchObject({ status: "SUBMITTED", retry: true });
+    // Never registers before the chain registry was read.
+    expect(await fakeCoordinator({}).adapter.settle(input)).toMatchObject({ status: "FAILED", retry: true });
+    const { adapter, seen } = await ready({});
     expect(await adapter.settle({ ...input, signerProof: null })).toEqual({ status: "UNSIGNED" });
     expect(seen).toHaveLength(0);
+  });
+});
+
+describe("coordinator chain registry (GET /chains)", () => {
+  it("resolves the registry name and verifyingContract by chain id, and sends the real required capabilities", async () => {
+    const required = [CAPABILITIES.settlementVerified, CAPABILITIES.nettingBatch];
+    const { adapter, seen } = fakeCoordinator({ required });
+    expect(await adapter.init(133)).toEqual({ chainName: "hashkey-testnet", verifyingContract: HUB, source: "registry" });
+    expect(adapter.verifyingContract).toBe(HUB);
+    expect(seen.map((x) => `${x.method} ${x.path}`)).toEqual(["GET /chains"]);
+    const b = body(required);
+    await adapter.settle({ paymentId: hspPaymentId(133, HUB, b), body: b, signerProof: "0x12", txHash: TX, batchId: BATCH });
+    const reg = seen.find((x) => x.path === "/payments")!.body as { chain: string; mandate: { requiredCapabilities: string[] } };
+    expect(reg.chain).toBe("hashkey-testnet");
+    expect(reg.mandate.requiredCapabilities).toEqual(required);
+  });
+
+  it("accepts a matching pin and refuses to start on a mismatch", async () => {
+    await expect(fakeCoordinator({ pinned: HUB }).adapter.init(133)).resolves.toMatchObject({ verifyingContract: HUB });
+    await expect(fakeCoordinator({ pinned: TOKEN }).adapter.init(133)).rejects.toThrow(/differs from the Coordinator registry/);
+  });
+
+  it("falls back to HSP_CHAIN_NAME plus the pin only when the registry has no entry, and refuses without them", async () => {
+    await expect(fakeCoordinator({ chainName: "hashkey-testnet", pinned: HUB }).adapter.init(31337)).resolves.toEqual({
+      chainName: "hashkey-testnet",
+      verifyingContract: HUB,
+      source: "fallback",
+    });
+    await expect(fakeCoordinator({ chainsStatus: 503, chainName: "x", pinned: HUB }).adapter.init(133)).resolves.toMatchObject({ source: "fallback" });
+    await expect(fakeCoordinator({ chainName: "x" }).adapter.init(31337)).rejects.toThrow(/HSP_VERIFYING_CONTRACT/);
+    await expect(fakeCoordinator({ chains: { unexpected: true } }).adapter.init(133)).rejects.toThrow(/unexpected response shape/);
+    expect(() => fakeCoordinator({}).adapter.verifyingContract).toThrow(/before init/);
   });
 });
 

@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Database } from "../src/db/database.ts";
+import { Database, MIGRATIONS_DIR } from "../src/db/database.ts";
 import { DISPOSABLE_FLAG, assertDisposableTarget, isDisposableTarget } from "../src/db/guard.ts";
 import { accounts, Ledger, UnbalancedJournalError } from "../src/ledger.ts";
-import { ConfigError, loadConfig } from "../src/config.ts";
+import { ConfigError, defaultConfirmTag, loadConfig } from "../src/config.ts";
 import { ANVIL_KEYS, tempDir } from "./helpers.ts";
 
 const tmp = tempDir("payminto-storage-");
@@ -16,10 +16,35 @@ const PROVIDER = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
 describe("database", () => {
   it("migrates once, in WAL mode with foreign keys on", () => {
     const db = new Database(join(tmp.dir, "a.test.db"));
-    expect(db.migrate()).toBe(2);
+    expect(db.migrate()).toBe(3);
     expect(db.migrate()).toBe(0);
     expect(db.get<{ journal_mode: string }>("PRAGMA journal_mode")!.journal_mode).toBe("wal");
     expect(db.get<{ foreign_keys: number }>("PRAGMA foreign_keys")!.foreign_keys).toBe(1);
+    db.close();
+  });
+
+  it("upgrades a v2 database in place: batches keep their rows and references, and accept 'included'", () => {
+    // A database created before migration 003, with a confirmed batch that calls reference.
+    const v2 = join(tmp.dir, "migrations-v2");
+    mkdirSync(v2, { recursive: true });
+    for (const f of ["001_init.sql", "002_denial_aggregation.sql"]) writeFileSync(join(v2, f), readFileSync(join(MIGRATIONS_DIR, f)));
+    const db = new Database(join(tmp.dir, "upgrade.test.db"));
+    expect(db.migrate(v2)).toBe(2);
+    const at = "2026-10-29T00:00:00.000Z";
+    db.run("INSERT INTO mandates (id, owner, agent, token, total_cap, valid_after, valid_until, payees_root, policy_hash, salt, owner_signature, policy, payees, label, status, created_at) VALUES ('0xm', '0xo', '0xa', '0xt', '1', 0, 1, '0x', '0x', '0x', '0x', '{}', '[]', 'l', 'open', ?)", at);
+    db.run("INSERT INTO providers (id, name, description, payee, price_atomic, resource, category, api_key_hash, created_at) VALUES ('p', 'P', 'd', '0xp', '1', 'r', 'c', 'h', ?)", at);
+    db.run("INSERT INTO batches (batch_id, status, token, trigger, created_at, confirmed_at, gas_used) VALUES ('0xb', 'confirmed', '0xt', 'manual', ?, ?, '21000')", at, at);
+    db.run("INSERT INTO calls (call_id, mandate_id, agent, payee, provider_id, amount, cumulative, request_hash, agent_signature, timestamp, leaf, node_signature, status, batch_seq, accepted_at) VALUES ('c1', '0xm', '0xa', '0xp', 'p', '1', '1', '0x', '0x', 0, '0x', '0x', 'settled', 1, ?)", at);
+
+    expect(db.migrate()).toBe(1);
+    const b = db.get<{ status: string; gas_used: string; included_at: string; replacements: number; l1_fee: string | null }>("SELECT * FROM batches WHERE seq = 1")!;
+    expect(b).toMatchObject({ status: "confirmed", gas_used: "21000", included_at: at, replacements: 0, l1_fee: null });
+    expect(db.all("PRAGMA foreign_key_check")).toEqual([]);
+    expect(db.get<{ foreign_keys: number }>("PRAGMA foreign_keys")!.foreign_keys).toBe(1);
+    // calls still reference batches (not a renamed copy) and the new status is accepted.
+    expect(db.get<{ sql: string }>("SELECT sql FROM sqlite_master WHERE name = 'calls'")!.sql).toMatch(/REFERENCES batches \(seq\)/);
+    db.run("INSERT INTO batches (status, token, trigger, created_at) VALUES ('included', '0xt', 'manual', ?)", at);
+    expect(() => db.run("INSERT INTO calls (call_id, mandate_id, agent, payee, provider_id, amount, cumulative, request_hash, agent_signature, timestamp, leaf, node_signature, status, batch_seq, accepted_at) VALUES ('c2', '0xm', '0xa', '0xp', 'p', '1', '2', '0x', '0x', 0, '0x', '0x', 'settling', 99, ?)", at)).toThrow(/FOREIGN KEY/);
     db.close();
   });
 
@@ -155,8 +180,35 @@ describe("config", () => {
   });
 
   it("requires coordinator settings in coordinator mode", () => {
-    expect(() =>
-      loadConfig({ ...base, DEPLOYMENTS_DIR: join(tmp.dir, "deployments"), HSP_MODE: "coordinator" }),
-    ).toThrow(/HSP_COORDINATOR_URL[\s\S]*HSP_API_KEY[\s\S]*HSP_CHAIN_NAME[\s\S]*HSP_VERIFYING_CONTRACT/);
+    const err = (() => {
+      try {
+        loadConfig({ ...base, DEPLOYMENTS_DIR: join(tmp.dir, "deployments"), HSP_MODE: "coordinator" });
+      } catch (e) {
+        return e as Error;
+      }
+    })();
+    expect(err?.message).toMatch(/HSP_COORDINATOR_URL[\s\S]*HSP_API_KEY/);
+    // Chain name and verifying contract come from the Coordinator's GET /chains; the env values are fallback and pin.
+    expect(err?.message).not.toMatch(/HSP_CHAIN_NAME|HSP_VERIFYING_CONTRACT/);
+    const c = loadConfig({
+      ...base,
+      DEPLOYMENTS_DIR: join(tmp.dir, "deployments"),
+      HSP_MODE: "coordinator",
+      HSP_COORDINATOR_URL: "https://coordinator.example",
+      HSP_API_KEY: "k",
+      HSP_REQUIRED_CAPABILITIES: "proves:settlement-verified:v1, proves:payminto-netting-batch:v1",
+    });
+    expect(c.hsp.verifyingContractPinned).toBe(false);
+    expect(c.hsp.requiredCapabilities).toEqual(["proves:settlement-verified:v1", "proves:payminto-netting-batch:v1"]);
+  });
+
+  it("confirms at the safe head on HashKey Chain and at latest on anvil, unless CONFIRM_TAG says otherwise", () => {
+    const local = loadConfig({ ...base, DEPLOYMENTS_DIR: join(tmp.dir, "deployments") });
+    expect(local.confirmTag).toBe("latest");
+    expect(loadConfig({ ...base, DEPLOYMENTS_DIR: join(tmp.dir, "deployments"), CONFIRM_TAG: "finalized" }).confirmTag).toBe("finalized");
+    expect(() => loadConfig({ ...base, DEPLOYMENTS_DIR: join(tmp.dir, "deployments"), CONFIRM_TAG: "pending" })).toThrow(/CONFIRM_TAG/);
+    expect(defaultConfirmTag(133)).toBe("safe");
+    expect(defaultConfirmTag(177)).toBe("safe");
+    expect(defaultConfirmTag(31337)).toBe("latest");
   });
 });
