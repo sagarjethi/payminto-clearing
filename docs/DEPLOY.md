@@ -7,8 +7,21 @@ Deploying costs only gas in HSK.
 ## 1. Prerequisites
 
 - Foundry 1.5 or newer (`forge --version`).
-- A deployer wallet with a little HSK: a few cents of HSK is plenty at HashKey Chain gas prices.
+- A deployer wallet with a little HSK.
 - Testnet HSK comes from https://faucet.hsk.xyz/faucet.
+
+Gas planning:
+
+| | Mainnet (177) | Testnet (133) |
+|---|---|---|
+| Base fee | held at 500 gwei | about 1 gwei |
+| Primary RPC | https://mainnet.hsk.xyz | https://testnet.hsk.xyz |
+| Fallback RPCs | https://hashkey.drpc.org, https://177.rpc.thirdweb.com | https://133.rpc.thirdweb.com |
+| Explorer | https://hsk.blockscout.com | https://testnet-explorer.hskchain.net |
+| `eth_getLogs` range | at most 5,001 blocks | at most 5,001 blocks |
+
+At 500 gwei, deploying the hub (about 2.0M gas) costs about 1 HSK on mainnet; fund the deployer with a little more than that.
+`docs/HASHKEY.md` has the measured chain facts behind these numbers.
 
 Keep the deployer key out of shell history and out of this repo.
 The simplest safe option is a Foundry keystore:
@@ -17,48 +30,67 @@ The simplest safe option is a Foundry keystore:
 cast wallet import payminto-deployer --interactive
 ```
 
-## 2. Testnet first (chain 133)
+## 2. Deterministic address
+
+`script/Deploy.s.sol` deploys with CREATE2 through the canonical deployer `0x4e59b44847b379578588920cA78FbF26c0B4956C` (present on 31337, 133 and 177) and the salt `keccak256("payminto.clearing.v1")`.
+`foundry.toml` pins `bytecode_hash = "ipfs"` and `cbor_metadata = true`, so the same source and compiler give the same bytecode and therefore the same hub address on every chain.
+A second run against a chain where the hub already exists reverts instead of deploying a duplicate.
+
+## 3. Testnet first (chain 133)
 
 ```bash
 cd contracts
 forge script script/Deploy.s.sol --rpc-url hashkey_testnet --broadcast --account payminto-deployer
+script/verify.sh 133
 ```
 
-The address is written to `contracts/deployments/133.json`.
-Verify the source on the testnet explorer:
+The address and the deployment block are written to `contracts/deployments/133.json`.
+`script/verify.sh` verifies the source on Blockscout and falls back to Sourcify (`--verifier sourcify`) if Blockscout fails or is slow.
+Commit the deployments file: the node, the dashboard and the Docker image read it.
 
-```bash
-forge verify-contract <HUB_ADDRESS> src/ClearingHub.sol:ClearingHub --chain 133 --verifier blockscout --verifier-url https://testnet-explorer.hsk.xyz/api/
-```
-
-## 3. Mainnet (chain 177) - required for a demo slot
+## 4. Mainnet (chain 177) - required for a demo slot
 
 ```bash
 cd contracts
 forge script script/Deploy.s.sol --rpc-url hashkey --broadcast --account payminto-deployer
-forge verify-contract <HUB_ADDRESS> src/ClearingHub.sol:ClearingHub --chain 177 --verifier blockscout --verifier-url https://hsk.blockscout.com/api/
+script/verify.sh 177
 ```
 
-The address is written to `contracts/deployments/177.json`, which the node and dashboard read automatically.
-Sourcify also supports chain 177 and 133 if Blockscout verification is slow: add `--verifier sourcify`.
+The address and block go to `contracts/deployments/177.json`, which the node and dashboard read automatically.
 
-## 4. Point a Clearing Node at it
+## 5. Point a Clearing Node at it
+
+Use a fresh operator key that holds only a little HSK for settlement gas, never a deployer or treasury key.
+Create `apps/node/.env` from the example; `pnpm --filter @payminto/node start` loads it, exactly like `dev`:
 
 ```bash
-CHAIN_ID=177 \
-OPERATOR_KEY=<node operator key, holds a little HSK for settlement gas> \
-ADMIN_TOKEN=<long random string> \
+cp apps/node/.env.example apps/node/.env
+# edit apps/node/.env:
+#   CHAIN_ID=177
+#   RPC_URL=https://mainnet.hsk.xyz
+#   OPERATOR_KEY=<fresh key, a little HSK for gas>
+#   ADMIN_TOKEN=<openssl rand -hex 32>
+#   PUBLIC_URL=https://node.example.com
+#   CORS_ORIGINS=https://dashboard.example.com
 pnpm --filter @payminto/node start
 ```
+
+Values exported in the shell take precedence over the file.
+On 133 and 177 the node refuses to start if `OPERATOR_KEY` is one of the ten public anvil/hardhat keys, if `ADMIN_TOKEN` is `dev-admin-token` or shorter than 32 characters, or if it cannot tell where the hub was deployed.
+That deploy block comes from `blockNumber` in `contracts/deployments/<CHAIN_ID>.json`, or from `DEPLOY_BLOCK` when you set `HUB_ADDRESS` yourself; the node scans for on-chain revocations from there.
+`RPC_FALLBACK_URLS` defaults to the public fallbacks in the table above (set `none` to disable).
 
 The token defaults to mainnet USDC.e `0x054ed45810DbBAb8B27668922D110669c9D88D0a`.
 Agents need USDC.e in their own wallets and a one-time `approve(hub, cap)`; the SDK `ensureAllowance` does this.
 
-## 5. A real mainnet smoke test for the submission
+To run the node and dashboard in Docker instead, see "Self-host with Docker" in the README.
+For TLS, backups, upgrades and monitoring, see [OPERATIONS.md](OPERATIONS.md).
+
+## 6. A real mainnet smoke test for the submission
 
 1. Fund two agent wallets with 1 USDC.e each and a little HSK.
 2. Create one mandate per agent with a 1 USDC.e total cap from the dashboard.
 3. Run the demo against mainnet with tiny prices (for example 0.001 USDC.e per call).
 4. Settle once and record the `settleBatch` transaction link on https://hsk.blockscout.com for the submission.
 
-Total cost is well under 2 USD including gas.
+Total cost is 2 USDC.e plus well under 1 HSK of gas (two `openMandate` calls and one `settleBatch` at the 500 gwei mainnet base fee).

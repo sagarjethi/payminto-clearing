@@ -40,19 +40,27 @@ Measured: one batch cleared 640 calls for 1.91M gas, versus 22.04M gas for one t
 
 ## Quick start (local, no real money)
 
-Requirements: Node 22.13+, pnpm 9, Foundry.
+Requirements: Node 22.18+ (`nvm install` reads `.nvmrc`), pnpm 9 (`corepack enable`), Foundry 1.5+ (`anvil` and `forge` on PATH).
+The code runs TypeScript directly with Node's built-in type stripping, so there is no build step.
 
 ```bash
+git clone <this repo> payminto-clearing && cd payminto-clearing
 pnpm install
 pnpm demo
 ```
 
-`pnpm demo` starts a local chain, deploys the contracts, starts the node and three paid services, runs about 500 agent calls including two blocked attacks, settles them, and prints the result with an on-chain proof check.
-For the dashboard, run in a second terminal:
+`pnpm demo` starts a private anvil chain, deploys the contracts with `forge`, starts the node and three paid services, runs about 500 agent calls including two blocked attacks, settles them, prints the result with an on-chain proof check, and exits.
+It uses only public anvil dev keys on chain 31337, so no real money is involved.
+
+To watch it in the dashboard, use the staged run, which keeps the node up and walks through the story one Enter at a time:
 
 ```bash
-NEXT_PUBLIC_NODE_URL=http://localhost:8787 pnpm --filter dashboard dev
+pnpm demo:stage                                                         # terminal 1
+NEXT_PUBLIC_NODE_URL=http://localhost:8787 pnpm --filter dashboard dev  # terminal 2
 ```
+
+Open http://localhost:3000 and sign in with the local admin token `dev-admin-token`.
+If port 8787 is busy, `demo:stage` prints the port it picked; use that in `NEXT_PUBLIC_NODE_URL`.
 
 Tests:
 
@@ -62,15 +70,33 @@ pnpm test
 pnpm typecheck
 ```
 
+CI runs the same commands plus the dashboard build, `pnpm demo` on a clean checkout, and the Docker stack ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
+
+## Self-host with Docker
+
+The node and dashboard ship as Docker images (Node 22 slim, non-root, SQLite on a named volume, health checks).
+A local stack with its own anvil chain needs no keys and no money:
+
+```bash
+docker compose --profile local up --build
+```
+
+This starts anvil, deploys `ClearingHub` and a mock USDC once (`forge script`), then the node on http://localhost:8787 and the dashboard on http://localhost:3000 (admin token `dev-admin-token`).
+Chain state and the node database survive restarts; `docker compose --profile local down -v` wipes both.
+
+For HashKey Chain, copy `.env.docker.example` to `.env`, set `CHAIN_ID`, a fresh `OPERATOR_KEY` and a random 32+ character `ADMIN_TOKEN`, then run `docker compose up -d --build`.
+On chains 133 and 177 the node refuses to start with a public anvil/hardhat key, the dev admin token, or no deploy block.
+Ports bind to 127.0.0.1; put a TLS reverse proxy in front as described in [docs/OPERATIONS.md](docs/OPERATIONS.md), which also covers backups, upgrades, monitoring and key handling.
+
 ## HashKey Chain
 
 | | Mainnet (177) | Testnet (133) |
 |---|---|---|
 | ClearingHub | `<HUB_ADDRESS_MAINNET>` | `<HUB_ADDRESS_TESTNET>` |
 | Settlement token | USDC.e `0x054ed45810DbBAb8B27668922D110669c9D88D0a` | USDC `0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6` |
-| Explorer | https://hsk.blockscout.com | https://testnet-explorer.hsk.xyz |
+| Explorer | https://hsk.blockscout.com | https://testnet-explorer.hskchain.net |
 
-Deployment steps are in [docs/DEPLOY.md](docs/DEPLOY.md).
+Deployment steps are in [docs/DEPLOY.md](docs/DEPLOY.md); running a node in production is in [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Status and honesty notes
 

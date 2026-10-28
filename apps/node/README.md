@@ -21,8 +21,11 @@ To run the node alone against an existing deployment:
 
 ```sh
 cp apps/node/.env.example apps/node/.env   # edit as needed
-pnpm --filter @payminto/node dev
+pnpm --filter @payminto/node start         # or dev; both load apps/node/.env, shell variables win
 ```
+
+Node 22.18 or newer is required (type stripping and `node:sqlite`); `start` and `dev` check the runtime first and say so clearly.
+Production concerns (TLS, backups with `pnpm --filter @payminto/node backup`, upgrades, `/metrics`, key handling) are in `docs/OPERATIONS.md`.
 
 `dev` reads `contracts/deployments/<CHAIN_ID>.json` for `HUB_ADDRESS` and `TOKEN_ADDRESS` unless they are set.
 Stop with Ctrl-C or SIGTERM: the node stops accepting requests, closes SSE streams, lets an in-flight settlement finish booking, and closes the database.
@@ -35,13 +38,15 @@ Errors name the variable and never print its value, and logs never contain keys 
 | Var | Default | Meaning |
 |---|---|---|
 | `PORT` | `8787` | HTTP port |
-| `HOST` | `0.0.0.0` | Bind address |
+| `HOST` | `127.0.0.1` | Bind address (the Docker image uses `0.0.0.0`) |
 | `CHAIN_ID` | `31337` | 31337, 133 or 177 |
 | `RPC_URL` | network default | JSON-RPC endpoint |
+| `RPC_FALLBACK_URLS` | network fallbacks on 133/177 | Comma-separated endpoints tried when `RPC_URL` fails; `none` disables |
+| `DEPLOY_BLOCK` | deployments file `blockNumber` | First block of the on-chain revocation scan; required on 133/177 without it |
 | `HUB_ADDRESS` | deployments file | ClearingHub address |
 | `TOKEN_ADDRESS` | deployments file, then network default | Settlement token |
-| `OPERATOR_KEY` | required | Signs receipts and HSP adapter receipts, submits `openMandate` and `settleBatch` (gas only) |
-| `ADMIN_TOKEN` | required (12+ chars) | Bearer token for admin routes, the dashboard and SSE |
+| `OPERATOR_KEY` | required | Signs receipts and HSP adapter receipts, submits `openMandate` and `settleBatch` (gas only); public anvil/hardhat keys are refused on 133/177 |
+| `ADMIN_TOKEN` | required (12+ chars) | Bearer token for admin routes, `/metrics`, the dashboard and SSE; 32+ chars and not `dev-admin-token` on 133/177 |
 | `DB_PATH` | `./data/clearing.db` | SQLite file (WAL mode) |
 | `SETTLE_INTERVAL_SEC` | `0` | Auto-settle period; 0 means manual only |
 | `SETTLE_MIN_CALLS` | `1` | Auto-settle skips below this many unsettled calls |
@@ -52,6 +57,12 @@ Errors name the variable and never print its value, and logs never contain keys 
 | `HSP_COSIGN_TIMEOUT_SEC` | `20` | How long a batch waits for debtor agents to co-sign HSP mandates |
 | `FUNDS_REFRESH_SEC` | `30` | Balance and allowance refresh period while calls are unsettled |
 | `DEPLOYMENTS_DIR` | `contracts/deployments` | Where `<chainId>.json` is read from |
+| `RATE_LIMIT_PROVIDER_RPS`, `RATE_LIMIT_PROVIDER_BURST` | `200`, `1000` | Token bucket per provider key on `POST /v1/vouchers` (0 rps disables) |
+| `RATE_LIMIT_IP_RPS`, `RATE_LIMIT_IP_BURST` | `100`, `1000` | Token bucket per client IP for requests without the admin token (0 rps disables) |
+| `TRUST_PROXY_HOPS` | `0` | Reverse proxies whose `X-Forwarded-For` entries are trusted for the client IP |
+| `DENIAL_DEDUP_SEC` | `60` | Identical denials within this window fold into one row with a `repeats` count |
+| `DENIALS_MAX_ROWS`, `EVENTS_MAX_ROWS` | `100000`, `200000` | Oldest denial and event rows beyond these are pruned every minute |
+| `BACKUP_DIR` | `./backups` | Output directory of `pnpm --filter @payminto/node backup` |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` (JSON lines on stdout) |
 
 ## How a call is cleared
