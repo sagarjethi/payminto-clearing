@@ -2,7 +2,7 @@
 
 import { useTheme } from "next-themes";
 import { LogOut } from "lucide-react";
-import { networks } from "@payminto/protocol";
+import { hashkeyContracts, networks, type HashKeyContracts } from "@payminto/protocol";
 import { MOCK_MODE, NODE_URL } from "@/lib/config";
 import { useSession } from "@/lib/session";
 import { useLive } from "@/lib/live";
@@ -133,8 +133,50 @@ export default function SettingsPage() {
               </Field>
             </Fields>
           </Panel>
+          <HashKeyPanel chainId={chainId} />
         </div>
       )}
     </>
+  );
+}
+
+/** Verified HashKey Chain contracts the hub composes with, so an operator can see what is live where. */
+function HashKeyPanel({ chainId }: { chainId: number }) {
+  const onHashKey = chainId === 177 || chainId === 133;
+  const id = (onHashKey ? chainId : 133) as 177 | 133;
+  const c: HashKeyContracts = hashkeyContracts[id];
+  const rows: [string, string, string | undefined][] = [
+    ["Permit2", "Signature approvals for tokens without EIP-2612", c.permit2],
+    ["Multicall3", "Batched reads", c.multicall3],
+    ["Safe factory", "Safe v1.4.1, for ERC-1271 mandate owners", c.safe.proxyFactory],
+    ["EAS", "Attestations (OP Stack predeploy)", c.eas],
+    ["CCIP router", "Cross-chain messaging", c.ccipRouter],
+    ["APRO USDC/USD", "Price feed, 8 decimals", c.apro.usdcUsd],
+    ["APRO USDT/USD", "Price feed, 8 decimals", c.apro.usdtUsd],
+    ["USDT", "Bridged stablecoin", c.usdt],
+  ];
+  return (
+    <Panel
+      title="HashKey Chain contracts"
+      description={
+        onHashKey
+          ? "Checked live with eth_getCode; the hub and agents can compose with these."
+          : `This node runs on a local chain (${chainId}). On HashKey Chain Testnet the hub composes with these verified contracts.`
+      }
+      className="lg:col-span-2"
+    >
+      <Fields className="lg:grid-cols-2">
+        {rows
+          .filter((r): r is [string, string, string] => Boolean(r[2]))
+          .map(([name, hint, address]) => (
+            <Field key={name} label={name} hint={hint}>
+              <span className="flex flex-col gap-0.5">
+                <Address address={address} showName={false} explorer={onHashKey} />
+                <span className="text-xs text-muted-foreground">{hint}</span>
+              </span>
+            </Field>
+          ))}
+      </Fields>
+    </Panel>
   );
 }

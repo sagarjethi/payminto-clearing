@@ -6,6 +6,8 @@
 import { getAddress, keccak256, toBytes, toHex, type Address, type Hex } from "viem";
 import {
   DENIAL_RULES,
+  explorerTx,
+  networkFor,
   payeesRoot,
   policyHash,
   receiptLeaf,
@@ -45,7 +47,8 @@ import type {
 
 const CHAIN_ID = 133;
 const EMPTY = process.env.NEXT_PUBLIC_MOCK === "empty";
-const EXPLORER = "https://testnet-explorer.hsk.xyz";
+/** The chain package owns the explorer URL (testnet-explorer.hsk.xyz does not resolve). */
+const EXPLORER = networkFor(CHAIN_ID).explorer;
 const USDC = 1_000_000n;
 
 // ---------------------------------------------------------------------------
@@ -369,7 +372,7 @@ function settlePending(atMs: number, hspPlan: (i: number) => HspStatus = () => "
     receiptsRoot,
     token: TOKEN,
     txHash,
-    explorerUrl: `${EXPLORER}/tx/${txHash}`,
+    explorerUrl: explorerTx(CHAIN_ID, txHash),
     gross: gross.toString(),
     net: netTotal.toString(),
     calls: pending.length,
