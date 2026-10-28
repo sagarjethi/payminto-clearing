@@ -32,5 +32,8 @@ pnpm --filter dashboard build
 - `lib/api.ts` typed client for SPEC 5.6, every response parsed with the zod schemas in `lib/schemas.ts`.
 - `lib/mock/server.ts` the mock node, built on `@payminto/protocol` so Merkle proofs and netting are real.
 - `lib/live.tsx` SSE subscription (`/v1/events?token=`) that refreshes the affected screens.
-- `lib/netting.ts` the hub's netting algorithm and the two-column flow layout used on the Netting screen.
-- `docs/screenshots/` reference captures; `live-anvil-*` were taken against a real node on anvil.
+- `lib/netting.ts` the hub's netting algorithm, the two-column flow layout and the before-versus-after figures used on the Netting screen.
+- `lib/denials.ts` plain-language names for each policy rule and the per-rule summary on Blocked calls.
+- `lib/spend.ts` the mandate budget bar and validity countdown; `lib/proof.ts` the individual checks behind a receipt verdict.
+- `docs/screenshots/` reference captures; `live-anvil-*` were taken against a real node on anvil, `v2-*` after the Mobbin-informed redesign.
+- `docs/DESIGN_REFERENCES.md` the Mobbin references behind each screen.

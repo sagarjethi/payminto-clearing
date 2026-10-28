@@ -40,7 +40,7 @@ export function proofChecks(p: Pick<ReceiptProof, "batchId" | "receiptsRoot" | "
     },
     {
       key: "settled",
-      label: "Batch settled on HashKey Chain",
+      label: "Batch settled on chain",
       state: p.txHash ? "pass" : "pending",
       detail: p.txHash ? "Funds moved wallet to wallet in one settleBatch transaction." : "Not settled yet.",
     },
