@@ -1,4 +1,6 @@
 import { defineChain, type Address, type Chain } from "viem";
+import { chainConfig as opStackChainConfig } from "viem/op-stack";
+import { hashkeyContracts, hashkeyNetworkFacts } from "./hashkey.ts";
 
 export type TokenInfo = {
   address: Address;
@@ -19,20 +21,28 @@ export type NetworkConfig = {
   clearingHub?: Address;
 };
 
+// HashKey Chain is an OP Stack L2: the op-stack config adds receipt formatters that expose l1Fee and l1GasUsed.
 export const hashkeyMainnet: Chain = defineChain({
+  ...opStackChainConfig,
   id: 177,
   name: "HashKey Chain",
   nativeCurrency: { name: "HashKey Platform Token", symbol: "HSK", decimals: 18 },
-  rpcUrls: { default: { http: ["https://mainnet.hsk.xyz"] } },
-  blockExplorers: { default: { name: "Blockscout", url: "https://hsk.blockscout.com" } },
+  rpcUrls: { default: { http: ["https://mainnet.hsk.xyz", ...hashkeyNetworkFacts[177].fallbackRpcUrls] } },
+  blockExplorers: { default: { name: "Blockscout", url: "https://hsk.blockscout.com", apiUrl: "https://hsk.blockscout.com/api" } },
+  contracts: { ...opStackChainConfig.contracts, multicall3: { address: hashkeyContracts[177].multicall3 } },
 });
 
+// The testnet explorer lives at hskchain.net; testnet-explorer.hsk.xyz does not resolve (checked 2026-10-29).
 export const hashkeyTestnet: Chain = defineChain({
+  ...opStackChainConfig,
   id: 133,
   name: "HashKey Chain Testnet",
   nativeCurrency: { name: "HashKey Platform Token", symbol: "HSK", decimals: 18 },
-  rpcUrls: { default: { http: ["https://testnet.hsk.xyz"] } },
-  blockExplorers: { default: { name: "Blockscout", url: "https://testnet-explorer.hsk.xyz" } },
+  rpcUrls: { default: { http: ["https://testnet.hsk.xyz", ...hashkeyNetworkFacts[133].fallbackRpcUrls] } },
+  blockExplorers: {
+    default: { name: "Blockscout", url: "https://testnet-explorer.hskchain.net", apiUrl: "https://testnet-explorer.hskchain.net/api" },
+  },
+  contracts: { ...opStackChainConfig.contracts, multicall3: { address: hashkeyContracts[133].multicall3 } },
   testnet: true,
 });
 
@@ -60,7 +70,7 @@ export const networks: Record<number, NetworkConfig> = {
   133: {
     chain: hashkeyTestnet,
     caip2: "eip155:133",
-    explorer: "https://testnet-explorer.hsk.xyz",
+    explorer: "https://testnet-explorer.hskchain.net",
     token: {
       address: "0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6",
       symbol: "USDC",

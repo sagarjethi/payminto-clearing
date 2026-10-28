@@ -1,5 +1,6 @@
 export * from "./abi.ts";
 export * from "./chains.ts";
+export * from "./hashkey.ts";
 export * from "./hub.ts";
 export * from "./merkle.ts";
 export * from "./policy.ts";
