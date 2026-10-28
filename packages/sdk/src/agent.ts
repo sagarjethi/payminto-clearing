@@ -27,6 +27,7 @@ import {
   SCHEME,
   voucherTypedData,
   X402_VERSION,
+  DENIAL_RULES,
   type ClearingReceipt,
   type PaymentRequirement,
   type VoucherPayment,
@@ -46,6 +47,7 @@ import {
 } from "./node-api.ts";
 import { computeRequestHash, Emitter, KeyedMutex, revokeMessage, sleep as defaultSleep } from "./util.ts";
 import { checkBeforeSigning, PolicyMismatchError, verifyMandatePolicy, type MandatePolicy, type VerifiedPolicy } from "./policy-guard.ts";
+import { MemoryReceiptStore, SqliteReceiptStore, type ReceiptStore } from "./receipt-store.ts";
 
 const policyBundleSchema = z.object({
   mandate: z.object({
@@ -70,34 +72,17 @@ function refusal(code: string, message: string, details: Record<string, unknown>
   });
 }
 
-/** Where the agent keeps receipts it was given; they justify (or refuse) HSP co-sign requests. */
-export interface ReceiptStore {
-  add(receipt: ClearingReceipt): void;
-  get(callId: Hex): ClearingReceipt | undefined;
-  all(): ClearingReceipt[];
-}
-
-export class MemoryReceiptStore implements ReceiptStore {
-  readonly #m = new Map<string, ClearingReceipt>();
-  add(r: ClearingReceipt) {
-    this.#m.set(r.callId.toLowerCase(), r);
-  }
-  get(id: Hex) {
-    return this.#m.get(id.toLowerCase());
-  }
-  all() {
-    return [...this.#m.values()];
-  }
-}
-
 export type AgentClientOptions = {
   chainId: number;
   hub: Address;
   /** Agent key. Only signTypedData / signMessage are used; it never leaves the process. */
   account: LocalAccount;
   mandateId: Hex;
-  /** Trusted clearing node. When unset, the node advertised in the 402 requirement is used. */
-  nodeUrl?: string;
+  /**
+   * The clearing node this agent trusts (required). Positions, the policy and the operator address that must sign
+   * receipts are read from here only, never from a provider response or the node a 402 requirement advertises.
+   */
+  nodeUrl: string;
   /** Start the HSP co-sign loop automatically after the first paid call. */
   autoCosign?: boolean;
   cosignIntervalMs?: number;
@@ -105,11 +90,18 @@ export type AgentClientOptions = {
   maxRetries?: number;
   /** Refuse requirements above this price (atomic units) without signing. */
   maxPrice?: bigint;
-  /** Expected node operator address in receipts. */
+  /** Optional pin of the node operator address. Receipts must be signed by the operator nodeUrl reports in any case. */
   trustedNode?: Address;
   /** Extra HSP verifying contracts the agent accepts besides the hub (coordinator deployments). */
   hspVerifyingContracts?: readonly Address[];
+  /**
+   * Receipts and signed positions. Defaults to a SqliteReceiptStore at `storePath`, else an in-memory store that is
+   * lost on restart (after which the agent refuses to extend positions it no longer remembers signing).
+   * Processes sharing one agent key must share one store.
+   */
   receipts?: ReceiptStore;
+  /** File for a durable SqliteReceiptStore (WAL). Ignored when `receipts` is given. */
+  storePath?: string;
   /**
    * The mandate, its policy and allowlist. When omitted the client fetches them from the node
    * (GET /v1/mandates/:id/policy). Either way they are verified against mandateId before use.
@@ -172,13 +164,11 @@ export class AgentClient extends Emitter<AgentEvents> {
   readonly #fetch: typeof fetch;
   readonly #mutex = new KeyedMutex();
   readonly #positions = new Map<string, bigint>();
-  /** Batch each receipt was used to justify: a receipt backs co-signatures of one batch only. */
-  readonly #callBatch = new Map<string, string>();
-  /** Total HSP amount already co-signed per batch. */
-  readonly #cosignedByBatch = new Map<string, bigint>();
   readonly #handledCosigns = new Set<string>();
-  #nodeUrl: string | undefined;
+  readonly #nodeUrl: string;
+  readonly #ownsStore: boolean;
   #policy: Promise<VerifiedPolicy> | null = null;
+  #operator: Promise<Address> | null = null;
   /** Highest cumulative ever seen per payee (never forgotten), for the total-cap check. */
   readonly #known = new Map<string, bigint>();
   /** Accepted spend of this client, for the rolling 24 h and per-minute checks. */
@@ -196,23 +186,51 @@ export class AgentClient extends Emitter<AgentEvents> {
     this.hub = getAddress(o.hub);
     this.account = o.account;
     this.mandateId = o.mandateId.toLowerCase() as Hex;
-    this.receipts = o.receipts ?? new MemoryReceiptStore();
+    if (typeof o.nodeUrl !== "string" || !/^https?:\/\/[^/]/i.test(o.nodeUrl)) {
+      throw new TypeError("AgentClient requires nodeUrl: the http(s) URL of the clearing node this agent trusts");
+    }
+    this.#nodeUrl = o.nodeUrl.replace(/\/+$/, "");
+    this.#ownsStore = !o.receipts && !!o.storePath;
+    this.receipts = o.receipts ?? (o.storePath ? new SqliteReceiptStore(o.storePath) : new MemoryReceiptStore());
     this.#fetch = o.fetch ?? globalThis.fetch.bind(globalThis);
-    this.#nodeUrl = o.nodeUrl?.replace(/\/+$/, "");
   }
 
   get address(): Address {
     return this.account.address;
   }
 
+  get nodeUrl(): string {
+    return this.#nodeUrl;
+  }
+
   #node(): NodeHttp {
-    if (!this.#nodeUrl) throw new Error("AgentClient has no nodeUrl yet: pass nodeUrl or make a paid call first");
     return new NodeHttp(this.#nodeUrl, { fetch: this.#fetch });
+  }
+
+  /**
+   * The operator address of the configured node (GET nodeUrl/v1/info, cached), checked against this client's chain
+   * and hub and against `trustedNode` when set. Every receipt must be signed by it.
+   */
+  nodeOperator(): Promise<Address> {
+    this.#operator ??= (async () => {
+      const info = await this.#node().get("/v1/info", infoSchema);
+      if (info.network.chainId !== this.chainId) throw new Error(`node at ${this.#nodeUrl} serves chain ${info.network.chainId}, not ${this.chainId}`);
+      if (!isAddressEqual(info.hub, this.hub)) throw new Error(`node at ${this.#nodeUrl} clears hub ${info.hub}, not ${this.hub}`);
+      if (this.#o.trustedNode && !isAddressEqual(info.operator, this.#o.trustedNode)) {
+        throw new Error(`node operator ${info.operator} is not the pinned trustedNode ${this.#o.trustedNode}`);
+      }
+      return getAddress(info.operator);
+    })();
+    this.#operator.catch(() => {
+      this.#operator = null; // retry on the next call
+    });
+    return this.#operator;
   }
 
   /** Current position for a payee from the node (what the next voucher must extend). */
   async position(payee: Address): Promise<{ cumulative: bigint; settled: bigint }> {
     const p = await this.#node().get(`/v1/mandates/${this.mandateId}/position?payee=${getAddress(payee)}`, positionSchema);
+    if (p.mandateId !== this.mandateId || !isAddressEqual(p.payee, payee)) throw new Error("node answered with the position of another mandate or payee");
     return { cumulative: BigInt(p.cumulative), settled: BigInt(p.settled) };
   }
 
@@ -272,11 +290,14 @@ export class AgentClient extends Emitter<AgentEvents> {
       this.emit("denied", { code: "CLIENT_MAX_PRICE", message: `price ${amount} exceeds maxPrice ${this.#o.maxPrice}`, url: req.url, payee, amount });
       return first;
     }
-    if (!this.#nodeUrl) this.#nodeUrl = requirement.extra.clearingNode.replace(/\/+$/, "");
     const requestHash = computeRequestHash(req.method, req.url, req.body);
     return this.#mutex.run(`${this.mandateId}:${payee}`, () => this.#pay(req, payee, amount, requestHash, getAddress(requirement.asset)));
   }
 
+  /**
+   * Picks the payminto-voucher requirement for this chain and hub. Only price, payee and asset are taken from it:
+   * `extra.clearingNode` is ignored, the agent talks to its configured node only.
+   */
   async #pickRequirement(res: Response): Promise<PaymentRequirement | null> {
     let required = decodeHeader<unknown>(res.headers.get(HEADER_REQUIRED));
     if (!required) required = await res.clone().json().catch(() => null);
@@ -316,12 +337,21 @@ export class AgentClient extends Emitter<AgentEvents> {
         return refusal(code, message, { enforcedBy: "agent" });
       }
     }
+    for (const [p, c] of this.receipts.signedPositions(this.mandateId)) this.#learn(p, c);
     let position: bigint = this.#positions.get(key) ?? (await this.position(payee)).cumulative;
-    this.#learn(key, position);
 
     let reservation: number | null = null;
     try {
       for (let attempt = 0; ; attempt++) {
+        // Never extend a position this agent did not sign itself: a voucher is bounded by its own high-water mark.
+        const signed = this.receipts.signedPosition(this.mandateId, payee);
+        if (position > signed) {
+          this.#positions.delete(key);
+          const details = { reported: position.toString(), signed: signed.toString(), enforcedBy: "agent" };
+          this.emit("denied", { code: "POSITION_UNVERIFIED", message: DENIAL_RULES.POSITION_UNVERIFIED, details, url: req.url, payee, amount });
+          return refusal("POSITION_UNVERIFIED", DENIAL_RULES.POSITION_UNVERIFIED, details);
+        }
+        this.#learn(key, position);
         const cumulative = position + amount;
         if (policy) {
           if (reservation !== null) this.#reserved.delete(reservation);
@@ -345,9 +375,10 @@ export class AgentClient extends Emitter<AgentEvents> {
           this.emit("denied", { code: "STALE_CUMULATIVE", message: res.message, details: res.details, url: req.url, payee, amount });
           return res.response;
         }
-        position = res.position ?? (await this.position(payee)).cumulative;
+        // Re-read from the configured node only; a position in the provider's 402 body is never trusted.
+        this.#positions.delete(key);
+        position = (await this.position(payee)).cumulative;
         this.#positions.set(key, position);
-        this.#learn(key, position);
         // Jittered backoff: 25-75 ms, doubling per attempt, so racing processes spread out.
         await sleep(Math.round((25 + random() * 50) * 2 ** attempt));
       }
@@ -365,10 +396,13 @@ export class AgentClient extends Emitter<AgentEvents> {
     cumulative: bigint,
   ): Promise<
     | { kind: "paid" | "done"; response: Response }
-    | { kind: "stale"; response: Response; position: bigint | null; message: string; details?: Record<string, unknown> }
+    | { kind: "stale"; response: Response; message: string; details?: Record<string, unknown> }
   > {
     const key = payee.toLowerCase();
     {
+      // Write-ahead: the high-water mark is durable before the signature exists.
+      this.receipts.recordSigned(this.mandateId, payee, cumulative);
+      this.#learn(key, cumulative);
       const signature = await this.account.signTypedData(
         voucherTypedData(this.chainId, this.hub, { mandateId: this.mandateId, payee, cumulative }),
       );
@@ -396,10 +430,7 @@ export class AgentClient extends Emitter<AgentEvents> {
       const code = denial.success ? denial.data.error.code : "PAYMENT_REQUIRED";
       const details = denial.success ? denial.data.error.details : undefined;
       const message = denial.success ? denial.data.error.message : "payment required";
-      if (code === "STALE_CUMULATIVE") {
-        const fromDetails = positionSchema.safeParse(details?.position);
-        return { kind: "stale", response: res, position: fromDetails.success ? BigInt(fromDetails.data.cumulative) : null, message, details };
-      }
+      if (code === "STALE_CUMULATIVE") return { kind: "stale", response: res, message, details };
       this.emit("denied", { code, message, details, url: req.url, payee, amount });
       return { kind: "done", response: res };
     }
@@ -441,9 +472,11 @@ export class AgentClient extends Emitter<AgentEvents> {
       timestamp: BigInt(r.timestamp),
     });
     if (leaf.toLowerCase() !== r.leaf.toLowerCase()) return "leaf mismatch";
+    const operator = await this.nodeOperator().catch(() => null);
+    if (!operator) return "cannot read the operator of the configured node";
     const signer = await recoverMessageAddress({ message: { raw: r.leaf }, signature: r.nodeSignature }).catch(() => null);
-    if (!signer || !isAddressEqual(signer, r.node)) return "bad node signature";
-    if (this.#o.trustedNode && !isAddressEqual(r.node, this.#o.trustedNode)) return "untrusted node";
+    if (!signer || !isAddressEqual(signer, operator)) return "not signed by the configured node operator";
+    if (!isAddressEqual(r.node, operator)) return "receipt names another node";
     return null;
   }
 
@@ -503,11 +536,11 @@ export class AgentClient extends Emitter<AgentEvents> {
     for (const c of item.calls) {
       const mine = this.receipts.get(c.callId);
       if (!mine || mine.mandateId.toLowerCase() !== this.mandateId) continue;
-      const usedFor = this.#callBatch.get(c.callId.toLowerCase());
+      const usedFor = this.receipts.batchOf(c.callId);
       if (usedFor !== undefined && usedFor !== batch) continue;
       justified += BigInt(mine.amount);
     }
-    const already = this.#cosignedByBatch.get(batch) ?? 0n;
+    const already = this.receipts.cosignedInBatch(item.batchId);
     if (already + body.amount > justified) {
       return { ok: false, reason: `co-signing ${body.amount} would exceed this agent's receipts in the batch (${justified}, already co-signed ${already})` };
     }
@@ -538,9 +571,8 @@ export class AgentClient extends Emitter<AgentEvents> {
         const signerProof = await this.account.signTypedData(hspTypedData(this.chainId, item.typedData.domain.verifyingContract, body));
         try {
           await this.#node().post(`/v1/cosign/${item.hspPaymentId}`, z.unknown(), { signerProof });
-          const batch = item.batchId.toLowerCase();
-          for (const c of item.calls) if (this.receipts.get(c.callId)) this.#callBatch.set(c.callId.toLowerCase(), batch);
-          this.#cosignedByBatch.set(batch, (this.#cosignedByBatch.get(batch) ?? 0n) + body.amount);
+          const mine = item.calls.filter((c) => this.receipts.get(c.callId)).map((c) => c.callId);
+          this.receipts.recordCosign(item.batchId, body.amount, mine);
           signed.push(item.hspPaymentId);
           this.emit("cosigned", { hspPaymentId: item.hspPaymentId, batchId: item.batchId, amount: body.amount, recipient: item.recipient });
         } catch (err) {
@@ -568,5 +600,11 @@ export class AgentClient extends Emitter<AgentEvents> {
   stopCosignLoop(): void {
     if (this.#cosignTimer) clearInterval(this.#cosignTimer);
     this.#cosignTimer = null;
+  }
+
+  /** Stops the co-sign loop and closes the receipt store if this client opened it (`storePath`). */
+  close(): void {
+    this.stopCosignLoop();
+    if (this.#ownsStore) this.receipts.close?.();
   }
 }

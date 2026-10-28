@@ -46,6 +46,12 @@ export const DENIAL_RULES = {
   PRICE_MISMATCH: "Voucher amount does not match the provider price",
   INSUFFICIENT_FUNDS: "Agent wallet balance or hub allowance cannot cover outstanding vouchers",
   TOKEN_MISMATCH: "Mandate token differs from the provider settlement token",
+  /** Agent-side only: the node reported a position above the highest cumulative this agent has signed. */
+  POSITION_UNVERIFIED: "Reported position exceeds what this agent has signed",
 } as const;
 
 export type DenialRule = keyof typeof DENIAL_RULES;
+
+/** Rules only the agent applies before signing; the node never returns them. */
+export const AGENT_ONLY_RULES = ["POSITION_UNVERIFIED"] as const satisfies readonly DenialRule[];
+export type NodeDenialRule = Exclude<DenialRule, (typeof AGENT_ONLY_RULES)[number]>;

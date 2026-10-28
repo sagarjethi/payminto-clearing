@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { erc20Abi, maxUint256, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { clearingHubAbi, verifyReceiptProof, type ClearingReceipt } from "@payminto/protocol";
-import { AgentClient, OwnerClient, paywall, type DeniedEvent } from "@payminto/sdk";
+import { AgentClient, MemoryReceiptStore, OwnerClient, paywall, type DeniedEvent } from "@payminto/sdk";
 import { startNode, type ClearingNode } from "../src/server.ts";
 import { silentLogger } from "../src/logger.ts";
 import { ANVIL_KEYS, deployClearing, freePort, mint, startAnvil, tempDir, testConfig, type Anvil } from "./helpers.ts";
@@ -108,6 +108,7 @@ afterAll(async () => {
 });
 
 describe("clearing end to end", () => {
+  const agentBStore = new MemoryReceiptStore();
   it("clears ~50 parallel paid calls in one netted batch, with HSP records and an on-chain proof", async () => {
     // --- providers, registered at the node and served behind the SDK paywall -------------------------
     const register = async (name: string, payee: Address, price: bigint, resource: string) => {
@@ -167,10 +168,10 @@ describe("clearing end to end", () => {
     // --- agents: funded and approved once ---------------------------------------------------------------
     await mint(anvil, token, AGENT_A.address, 100n * USDC);
     await mint(anvil, token, AGENT_B.address, 10n * USDC);
-    // Agent A discovers the node from the 402 requirement; agent B is pinned to it.
-    const agentA = new AgentClient({ chainId: 31337, hub, account: AGENT_A, mandateId: a.mandateId, trustedNode: node.services.chain.operator.address });
-    const agentB = new AgentClient({ nodeUrl: node.url, chainId: 31337, hub, account: AGENT_B, mandateId: b.mandateId });
-    // A second process of agent A on the same mandate (shares receipts), to exercise STALE_CUMULATIVE.
+    // Both agents are configured with their node; agent A also pins its operator address.
+    const agentA = new AgentClient({ nodeUrl: node.url, chainId: 31337, hub, account: AGENT_A, mandateId: a.mandateId, trustedNode: node.services.chain.operator.address });
+    const agentB = new AgentClient({ nodeUrl: node.url, chainId: 31337, hub, account: AGENT_B, mandateId: b.mandateId, receipts: agentBStore });
+    // A second process of agent A on the same mandate (shares its receipt store), to exercise STALE_CUMULATIVE.
     const agentA2 = new AgentClient({ nodeUrl: node.url, chainId: 31337, hub, account: AGENT_A, mandateId: a.mandateId, receipts: agentA.receipts });
     expect(await agentA2.ensureAllowance(anvil.wallet(ANVIL_KEYS[2]), maxUint256, { token })).toMatch(/^0x/);
     expect(await agentB.ensureAllowance(anvil.wallet(ANVIL_KEYS[3]), maxUint256, { token })).toMatch(/^0x/);
@@ -221,7 +222,7 @@ describe("clearing end to end", () => {
 
     // Policy is enforced twice: a client that skips the pre-sign guard (a buggy or compromised agent) is still
     // refused by the node with the same rules.
-    const unguarded = new AgentClient({ nodeUrl: node.url, chainId: 31337, hub, account: AGENT_A, mandateId: a.mandateId, enforcePolicy: false });
+    const unguarded = new AgentClient({ nodeUrl: node.url, chainId: 31337, hub, account: AGENT_A, mandateId: a.mandateId, enforcePolicy: false, receipts: agentA.receipts });
     const nodeOver = await unguarded.fetch(`${marketUrl}/premium`);
     const nodeNa = await unguarded.fetch(`${writerUrl}/rogue`);
     expect(((await nodeOver.json()) as { error: { code: string } }).error.code).toBe("PER_CALL_CAP");
@@ -371,7 +372,8 @@ describe("clearing end to end", () => {
   it("revokes at the node immediately with an agent signature", async () => {
     const mandates = await api<Array<{ id: Hex; agent: Address; status: string }>>("GET", "/v1/mandates");
     const mb = mandates.json.find((m) => m.agent === AGENT_B.address)!;
-    const agentB = new AgentClient({ nodeUrl: node.url, chainId: 31337, hub, account: AGENT_B, mandateId: mb.id });
+    // Agent B restarted with the same receipt store, so it still knows the positions it signed.
+    const agentB = new AgentClient({ nodeUrl: node.url, chainId: 31337, hub, account: AGENT_B, mandateId: mb.id, receipts: agentBStore });
     const r = (await agentB.revoke()) as { mandate: { status: string }; onchain: { submitted: boolean; call: { functionName: string } | null } };
     expect(r.mandate.status).toBe("revoked");
     // The operator is neither owner nor agent, so the node returns the call the owner must make.

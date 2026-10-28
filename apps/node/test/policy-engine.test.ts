@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DENIAL_RULES, type DenialRule } from "@payminto/protocol";
+import { AGENT_ONLY_RULES, DENIAL_RULES, type NodeDenialRule } from "@payminto/protocol";
 import { evaluateVoucher, type VoucherContext } from "../src/policy-engine.ts";
 
 const TOKEN = "0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6";
@@ -35,7 +35,7 @@ function ok(): VoucherContext {
 }
 
 type Breaker = (c: VoucherContext) => void;
-const breakers: Record<DenialRule, Breaker> = {
+const breakers: Record<NodeDenialRule, Breaker> = {
   UNKNOWN_MANDATE: (c) => {
     c.mandate = null;
   },
@@ -80,15 +80,16 @@ const breakers: Record<DenialRule, Breaker> = {
   },
 };
 
-const ORDER = Object.keys(breakers) as DenialRule[];
+const ORDER = Object.keys(breakers) as NodeDenialRule[];
 
 describe("policy engine", () => {
   it("accepts a voucher that passes every rule", () => {
     expect(evaluateVoucher(ok())).toEqual({ ok: true });
   });
 
-  it("covers every DenialRule the protocol defines", () => {
-    expect(new Set(ORDER)).toEqual(new Set(Object.keys(DENIAL_RULES)));
+  it("covers every DenialRule the protocol defines, except the agent-only ones", () => {
+    const agentOnly: readonly string[] = AGENT_ONLY_RULES;
+    expect(new Set(ORDER)).toEqual(new Set(Object.keys(DENIAL_RULES).filter((r) => !agentOnly.includes(r))));
   });
 
   for (const rule of ORDER) {

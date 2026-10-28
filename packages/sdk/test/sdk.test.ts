@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { getAddress, keccak256, toBytes, type Address, type Hex } from "viem";
@@ -19,7 +22,16 @@ import {
   receiptLeaf,
   type ClearingReceipt,
 } from "@payminto/protocol";
-import { AgentClient, computeRequestHash, KeyedMutex, paywall, type DeniedEvent } from "../src/index.ts";
+import {
+  AgentClient,
+  computeRequestHash,
+  KeyedMutex,
+  MemoryReceiptStore,
+  paywall,
+  SqliteReceiptStore,
+  verifyReceiptOnchain,
+  type DeniedEvent,
+} from "../src/index.ts";
 
 // Anvil dev keys (public, local only).
 const AGENT = privateKeyToAccount("0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a");
@@ -60,10 +72,12 @@ type Script = {
   bundle?: Bundle;
   /** What GET /v1/mandates/:id/policy serves; defaults to the honest bundle. */
   servedPolicy?: { mandate: Mandate; policy: Policy; payees: Address[] };
-  /** Positions served by GET /position, lagging the truth by this many calls (simulates another process). */
-  lagPosition?: number;
   alwaysStale?: boolean;
   receiptSigner?: typeof NODE;
+  /** Address the receipt names as its node (default the honest operator). */
+  receiptNode?: Address;
+  /** Added to every position GET /position serves (a lying node). */
+  inflatePosition?: bigint;
   cosignItems?: unknown[];
 };
 
@@ -97,9 +111,8 @@ function world(script: Script = {}) {
   node.get("/v1/mandates/:id/position", (c) => {
     const payee = getAddress(c.req.query("payee")!);
     const t = truth.get(payee) ?? 0n;
-    const price = payee === PAYEE ? 2000n : 5000n;
-    const lag = BigInt(script.lagPosition ?? 0) * price;
-    return c.json({ mandateId: MANDATE, payee, cumulative: (t > lag ? t - lag : 0n).toString(), settled: "0" });
+    const served = t + (script.inflatePosition ?? 0n);
+    return c.json({ mandateId: MANDATE, payee, cumulative: served.toString(), settled: "0" });
   });
   node.post("/v1/vouchers", async (c) => {
     const b = (await c.req.json()) as { payload: { payee: Address; amount: string; cumulative: string; signature: Hex; requestHash: Hex; mandateId: Hex } };
@@ -141,7 +154,7 @@ function world(script: Script = {}) {
       timestamp: 1_800_000_000,
       leaf,
       nodeSignature: await signer.signMessage({ message: { raw: leaf } }),
-      node: NODE.address,
+      node: script.receiptNode ?? NODE.address,
     };
     return c.json({ receipt, position: { ...position, cumulative: p.cumulative } });
   });
@@ -151,12 +164,59 @@ function world(script: Script = {}) {
     return c.json({ ok: true });
   });
 
+  // A node the honest agent must never talk to: it would serve an inflated position.
+  const evilNodeHits: string[] = [];
+  const evilNode = new Hono();
+  evilNode.all("*", (c) => {
+    evilNodeHits.push(c.req.path);
+    return c.json({ mandateId: MANDATE, payee: PAYEE, cumulative: "9000000", settled: "0" });
+  });
+
   const provider = new Hono();
   const fetchAll = ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     if (url.host === "node.test") return node.request(url.pathname + url.search, init);
+    if (url.host === "evil-node.test") return evilNode.request(url.pathname + url.search, init);
     return provider.request(input instanceof Request ? input : url.toString(), init);
   }) as typeof fetch;
+
+  // Malicious providers: a valid-looking requirement for PAYEE at 2000, but they never forward the voucher honestly.
+  const evilRequirement = (clearingNode: string) => {
+    const required = {
+      x402Version: 2,
+      error: { code: "PAYMENT_REQUIRED", message: "pay" },
+      accepts: [
+        {
+          scheme: "payminto-voucher",
+          network: "eip155:31337",
+          asset: TOKEN,
+          payTo: PAYEE,
+          amount: "2000",
+          resource: "/evil",
+          description: "evil",
+          maxTimeoutSeconds: 60,
+          extra: { clearingNode, clearingHub: HUB, providerId: "prv_evil", tokenSymbol: "USDC", tokenDecimals: 6 },
+        },
+      ],
+    };
+    return new Response(JSON.stringify(required), { status: 402, headers: { "content-type": "application/json", "PAYMENT-REQUIRED": encodeHeader(required) } });
+  };
+  const capturedVouchers: Array<{ cumulative: string; signature: Hex }> = [];
+  // Answers every voucher with STALE_CUMULATIVE carrying a huge "position", hoping the agent signs on top of it.
+  provider.get("/evil-stale", (c) => {
+    const sig = c.req.header("PAYMENT-SIGNATURE");
+    if (!sig) return evilRequirement(NODE_URL);
+    capturedVouchers.push(JSON.parse(Buffer.from(sig, "base64").toString()).payload);
+    const position = { mandateId: MANDATE, payee: PAYEE, cumulative: "9000000", settled: "0" };
+    return c.json({ error: { code: "STALE_CUMULATIVE", message: "stale", details: { position } } }, 402);
+  });
+  // Advertises a clearing node of its own choosing in the requirement.
+  provider.get("/fake-node", (c) => {
+    const sig = c.req.header("PAYMENT-SIGNATURE");
+    if (!sig) return evilRequirement("http://evil-node.test");
+    capturedVouchers.push(JSON.parse(Buffer.from(sig, "base64").toString()).payload);
+    return c.json({ served: true });
+  });
   const payA = paywall({ nodeUrl: NODE_URL, providerId: "prv_a", apiKey: "pmk_a", fetch: fetchAll });
   const payB = paywall({ nodeUrl: NODE_URL, providerId: "prv_b", apiKey: "pmk_b", fetch: fetchAll });
   provider.get("/q", payA.hono(), (c) => c.json({ ok: true, paidCumulative: c.get("payminto").receipt.cumulative }));
@@ -181,6 +241,7 @@ function world(script: Script = {}) {
       hub: HUB,
       account: countingAccount,
       mandateId: MANDATE,
+      nodeUrl: NODE_URL,
       fetch: fetchAll,
       trustedNode: NODE.address,
       sleep: async (ms) => {
@@ -198,12 +259,14 @@ function world(script: Script = {}) {
     sleeps,
     voucherPosts,
     voucherSignatures,
+    capturedVouchers,
+    evilNodeHits,
     stats: () => ({ maxInflightSamePayee, maxInflightAll }),
   };
 }
 
 describe("AgentClient.fetch", () => {
-  it("answers a 402 with a voucher, learns the node from the requirement and verifies the receipt", async () => {
+  it("answers a 402 with a voucher and verifies the receipt against the configured node", async () => {
     const w = world();
     const a = w.agent();
     const receipts: ClearingReceipt[] = [];
@@ -219,16 +282,18 @@ describe("AgentClient.fetch", () => {
     expect(w.accepted.map((x) => x.cumulative)).toEqual([2000n, 4000n]);
   });
 
-  it("re-signs on STALE_CUMULATIVE using the position in the denial, with jittered backoff", async () => {
-    const w = world({ lagPosition: 2 });
-    // Another process already spent 3 calls on this payee.
-    w.truth.set(PAYEE, 6000n);
-    const a = w.agent();
+  it("re-signs on STALE_CUMULATIVE at the node's position when another process sharing the store moved it", async () => {
+    const w = world();
+    const store = new MemoryReceiptStore();
+    const a = w.agent({ receipts: store });
+    const other = w.agent({ receipts: store }); // a second process of the same agent, sharing its store
+    expect((await a.fetch("http://provider.test/q")).status).toBe(200); // a caches position 2000
+    for (let i = 0; i < 3; i++) expect((await other.fetch(`http://provider.test/q?o=${i}`)).status).toBe(200);
     const denied: DeniedEvent[] = [];
     a.on("denied", (d) => denied.push(d));
-    const res = await a.fetch("http://provider.test/q");
+    const res = await a.fetch("http://provider.test/q?again");
     expect(res.status).toBe(200);
-    expect(w.accepted).toEqual([{ payee: PAYEE, cumulative: 8000n }]);
+    expect(w.accepted.map((x) => x.cumulative)).toEqual([2000n, 4000n, 6000n, 8000n, 10000n]);
     expect(w.sleeps).toEqual([50]);
     expect(denied).toEqual([]);
   });
@@ -269,8 +334,14 @@ describe("AgentClient.fetch", () => {
     a.on("error", (e) => errors.push(e));
     const res = await a.fetch("http://provider.test/q");
     expect(res.status).toBe(200);
-    expect(errors.map((e) => e.message)).toEqual(["receipt rejected: bad node signature"]);
+    expect(errors.map((e) => e.message)).toEqual(["receipt rejected: not signed by the configured node operator"]);
     expect(a.receipts.all()).toHaveLength(0);
+  });
+
+  it("requires nodeUrl", () => {
+    const w = world();
+    expect(() => w.agent({ nodeUrl: undefined as never })).toThrow(/requires nodeUrl/);
+    expect(() => w.agent({ nodeUrl: "node.test" })).toThrow(/requires nodeUrl/);
   });
 
   it("leaves non-voucher 402s alone and refuses prices above maxPrice without signing", async () => {
@@ -282,6 +353,149 @@ describe("AgentClient.fetch", () => {
     expect((await a.fetch("http://provider.test/q")).status).toBe(402);
     expect(denied.map((d) => d.code)).toEqual(["CLIENT_MAX_PRICE"]);
     expect(w.voucherPosts).toHaveLength(0);
+  });
+});
+
+describe("AgentClient against a malicious provider or node", () => {
+  it("ignores an inflated position in a provider's STALE_CUMULATIVE body and never signs above its own position", async () => {
+    const w = world();
+    const a = w.agent();
+    const denied: DeniedEvent[] = [];
+    a.on("denied", (d) => denied.push(d));
+    const res = await a.fetch("http://provider.test/evil-stale");
+    expect(res.status).toBe(402);
+    expect(denied.map((d) => d.code)).toEqual(["STALE_CUMULATIVE"]);
+    // Every attempt re-read the honest node (position 0) and signed 0 + 2000, never 9_000_000 + 2000.
+    expect(w.capturedVouchers.map((v) => v.cumulative)).toEqual(["2000", "2000", "2000", "2000"]);
+    expect(a.receipts.signedPosition(MANDATE, PAYEE)).toBe(2000n);
+  });
+
+  it("never talks to the clearing node a provider advertises in its requirement", async () => {
+    const w = world();
+    const a = w.agent();
+    expect((await a.fetch("http://provider.test/fake-node")).status).toBe(200);
+    expect(w.evilNodeHits).toEqual([]);
+    expect(w.capturedVouchers.map((v) => v.cumulative)).toEqual(["2000"]);
+  });
+
+  it("refuses with POSITION_UNVERIFIED, signing nothing, when the node reports a position above what the agent signed", async () => {
+    const w = world({ inflatePosition: 5_000_000n });
+    const a = w.agent();
+    const denied: DeniedEvent[] = [];
+    a.on("denied", (d) => denied.push(d));
+    const res = await a.fetch("http://provider.test/q");
+    expect(res.status).toBe(402);
+    const body = (await res.json()) as { error: { code: string; message: string; details: Record<string, string> } };
+    expect(body.error).toMatchObject({
+      code: "POSITION_UNVERIFIED",
+      message: "Reported position exceeds what this agent has signed",
+      details: { reported: "5000000", signed: "0", enforcedBy: "agent" },
+    });
+    expect(denied.map((d) => d.code)).toEqual(["POSITION_UNVERIFIED"]);
+    expect(w.voucherSignatures).toHaveLength(0);
+  });
+
+  it("rejects a receipt that is self-consistent but signed by a key other than the node operator", async () => {
+    const w = world({ receiptSigner: EVIL, receiptNode: EVIL.address });
+    const a = w.agent({ trustedNode: undefined });
+    const errors: Error[] = [];
+    a.on("error", (e) => errors.push(e));
+    expect((await a.fetch("http://provider.test/q")).status).toBe(200);
+    expect(errors.map((e) => e.message)).toEqual(["receipt rejected: not signed by the configured node operator"]);
+    expect(a.receipts.all()).toHaveLength(0);
+  });
+
+  it("rejects every receipt when the configured node's operator is not the pinned trustedNode", async () => {
+    const w = world();
+    const a = w.agent({ trustedNode: EVIL.address });
+    const errors: Error[] = [];
+    a.on("error", (e) => errors.push(e));
+    await a.fetch("http://provider.test/q");
+    expect(errors.map((e) => e.message)).toEqual(["receipt rejected: cannot read the operator of the configured node"]);
+    await expect(a.nodeOperator()).rejects.toThrow(/pinned trustedNode/);
+  });
+});
+
+describe("persistent receipt store", () => {
+  const BATCH = keccak256(toBytes("restart-batch"));
+
+  it("survives a restart: positions stay known and co-signing still works", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "payminto-sdk-")), "agent.receipts.test.db");
+    const w = world();
+    const first = w.agent({ storePath: path });
+    for (let i = 0; i < 3; i++) expect((await first.fetch(`http://provider.test/q?i=${i}`)).status).toBe(200);
+    first.close();
+
+    // Same file, new client: receipts and signed positions are back.
+    const second = w.agent({ storePath: path });
+    expect(second.receipts.all().map((r) => r.cumulative)).toEqual(["2000", "4000", "6000"]);
+    expect(second.receipts.signedPosition(MANDATE, PAYEE)).toBe(6000n);
+    // It extends the node's position because it remembers signing it.
+    expect((await second.fetch("http://provider.test/q?after-restart")).status).toBe(200);
+    expect(w.accepted.at(-1)).toEqual({ payee: PAYEE, cumulative: 8000n });
+
+    const calls = second.receipts.all().slice(0, 3).map((r) => ({ callId: r.callId, amount: r.amount }));
+    const honest = cosignItem(6000n, calls, BATCH);
+    const w2 = world({ cosignItems: [honest] });
+    const signer = w2.agent({ storePath: path });
+    const r = await signer.cosignOnce();
+    expect(r.signed).toEqual([honest.hspPaymentId]);
+    signer.close();
+    second.close();
+
+    // Co-sign accounting is durable too: the same receipts cannot justify the batch twice after another restart.
+    const third = w2.agent({ storePath: path });
+    expect(third.checkCosign(cosignItem(1n, calls, BATCH) as never)).toMatchObject({ ok: false });
+    third.close();
+
+    // Without the store, the same agent no longer knows what it signed and refuses to extend the position.
+    const amnesiac = w.agent();
+    const denied: DeniedEvent[] = [];
+    amnesiac.on("denied", (d) => denied.push(d));
+    expect((await amnesiac.fetch("http://provider.test/q")).status).toBe(402);
+    expect(denied.map((d) => d.code)).toEqual(["POSITION_UNVERIFIED"]);
+  });
+
+  it("keeps the highest signed cumulative across processes sharing the file, never lowering it", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "payminto-sdk-")), "shared.receipts.test.db");
+    const a = new SqliteReceiptStore(path);
+    const b = new SqliteReceiptStore(path);
+    a.recordSigned(MANDATE, PAYEE, 10_000n);
+    b.recordSigned(MANDATE, PAYEE, 4_000n);
+    b.recordSigned(MANDATE, PAYEE_2, 10n ** 30n); // beyond int64
+    expect(a.signedPosition(MANDATE, PAYEE)).toBe(10_000n);
+    expect(a.signedPosition(MANDATE, PAYEE_2)).toBe(10n ** 30n);
+    expect(b.signedPositions(MANDATE)).toEqual(new Map([[PAYEE.toLowerCase(), 10_000n], [PAYEE_2.toLowerCase(), 10n ** 30n]]));
+    a.close();
+    b.close();
+  });
+});
+
+describe("verifyReceiptOnchain", () => {
+  async function signedReceipt(signer = NODE) {
+    const base = { callId: keccak256(toBytes("c1")), mandateId: MANDATE, payee: PAYEE, amount: 2000n, cumulative: 2000n, requestHash: keccak256(toBytes("r")), timestamp: 1_800_000_000n };
+    const leaf = receiptLeaf(base);
+    return { ...base, amount: "2000", cumulative: "2000", timestamp: 1_800_000_000, leaf, nodeSignature: await signer.signMessage({ message: { raw: leaf } }) };
+  }
+  const chain = (settler: Address, merkle = true) => ({
+    readContract: (async (args: { functionName: string }) =>
+      args.functionName === "batches" ? [keccak256(toBytes("root")), TOKEN, settler, 1n, 1n, 1n] : merkle) as never,
+  });
+  const BATCH = keccak256(toBytes("b"));
+
+  it("verifies only when the batch settler is the node operator and the operator signed the leaf", async () => {
+    const r = await signedReceipt();
+    expect(await verifyReceiptOnchain({ publicClient: chain(NODE.address), hub: HUB, operator: NODE.address, receipt: r, batchId: BATCH, proof: [] })).toMatchObject({
+      verified: true,
+      reason: null,
+    });
+    // A batch someone else settled (for example over replayed vouchers with a made-up root) proves nothing.
+    const foreign = await verifyReceiptOnchain({ publicClient: chain(EVIL.address), hub: HUB, operator: NODE.address, receipt: r, batchId: BATCH, proof: [] });
+    expect(foreign).toMatchObject({ verified: false, merkleVerified: true, settlerIsNode: false });
+    expect(foreign.reason).toMatch(/settled by/);
+    // A leaf the node never signed proves nothing even inside the node's own batch.
+    const forged = await verifyReceiptOnchain({ publicClient: chain(NODE.address), hub: HUB, operator: NODE.address, receipt: await signedReceipt(EVIL), batchId: BATCH, proof: [] });
+    expect(forged).toMatchObject({ verified: false, nodeSigned: false });
   });
 });
 
@@ -402,6 +616,21 @@ describe("paywall", () => {
     expect(computeRequestHash("GET", "http://a.test/q?x=1", new TextEncoder().encode("{}"))).not.toBe(h);
   });
 });
+
+function cosignItem(amount: bigint, calls: Array<{ callId: Hex; amount: string }>, batchId: Hex) {
+  const body = buildNetTransferMandate({ payer: AGENT.address, recipient: PAYEE, token: TOKEN, amount, chainId: 31337, batchId, deadline: 1_900_000_000n });
+  return {
+    hspPaymentId: hspPaymentId(31337, HUB, body),
+    batchId,
+    payer: AGENT.address,
+    recipient: PAYEE,
+    token: TOKEN,
+    amount: amount.toString(),
+    deadline: 1_900_000_000,
+    calls: calls.map((c) => ({ ...c, mandateId: MANDATE, payee: PAYEE, cumulative: "0" })),
+    typedData: { domain: { name: "HSP", version: "1", chainId: 31337, verifyingContract: HUB }, types: hspTypes, primaryType: "Mandate", message: hspMandateToWire(body) },
+  };
+}
 
 describe("HSP co-sign (malicious node defence)", () => {
   const BATCH = keccak256(toBytes("batch-1"));
