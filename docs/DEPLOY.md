@@ -81,7 +81,8 @@ That deploy block comes from `blockNumber` in `contracts/deployments/<CHAIN_ID>.
 `RPC_FALLBACK_URLS` defaults to the public fallbacks in the table above (set `none` to disable).
 
 The token defaults to mainnet USDC.e `0x054ed45810DbBAb8B27668922D110669c9D88D0a`.
-Agents need USDC.e in their own wallets and a one-time `approve(hub, cap)`; the SDK `ensureAllowance` does this.
+Agents need USDC.e in their own wallets and an allowance for the hub: either a one-time `approve(hub, cap)` (SDK `ensureAllowance`, the agent pays gas) or, with no HSK at all, an EIP-2612 permit from `AgentClient.signPermit` that the owner submits with the mandate and the node opens with `openMandateWithPermit`.
+`openMandateWithPermit` is a new function, so the hub bytecode and therefore its CREATE2 address differ from builds before it; redeploy rather than reuse an older hub address.
 
 To run the node and dashboard in Docker instead, see "Self-host with Docker" in the README.
 For TLS, backups, upgrades and monitoring, see [OPERATIONS.md](OPERATIONS.md).

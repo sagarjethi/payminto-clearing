@@ -23,6 +23,13 @@ Payminto Clearing is that layer.
 5. **HSP.** Each net transfer is an HSP payment whose `settlementBinding` is the batch id, and the node acts as an HSP adapter that verifies and signs the receipt.
 6. **Proof.** The Merkle root of every call receipt is stored per batch, so anyone can prove any single call with `verifyReceipt`.
 
+Built for HashKey Chain specifically ([docs/HASHKEY.md](docs/HASHKEY.md)):
+- **Finality.** A settlement is `included` at one confirmation and `confirmed`, booked and HSP-verified only once its block is at or below the `safe` head; a reorged-out settlement is rebroadcast, never double-booked.
+- **Gasless agents.** An agent signs an EIP-2612 permit for USDC.e ("Bridged USDC", version 2) and the node opens its mandate with `openMandateWithPermit`: the agent holds no HSK and sends no transaction.
+- **USDC.e blacklist.** Every party is screened with `isBlacklisted` through Multicall3 before a batch is sent, so one blacklisted wallet cannot revert a whole netting batch.
+- **Fees and RPC.** The OP Stack L1 data fee is priced into the operator preflight and stored per batch; RPC calls retry with jittered backoff, and stuck settlements are replaced with the same nonce and 12.5 % higher fees.
+- **Ecosystem contracts.** Safe 1.4.1 owners (ERC-1271), Multicall3, the CREATE2 deployer, the GasPriceOracle and EAS attestations per batch (`EAS_ATTEST=true`), all proven on a testnet fork by `pnpm test:fork`.
+
 Measured: one batch cleared 640 calls for 1.91M gas, versus 22.04M gas for one transfer per call, 11.6x less ([docs/GAS.md](docs/GAS.md)).
 
 ## Repository
@@ -68,9 +75,10 @@ Tests:
 pnpm contracts:test
 pnpm test
 pnpm typecheck
+pnpm test:fork   # optional: anvil --fork-url https://testnet.hsk.xyz with the real testnet USDC, a real Safe and EAS
 ```
 
-CI runs the same commands plus the dashboard build, `pnpm demo` on a clean checkout, and the Docker stack ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
+CI runs the same commands plus the dashboard build, `pnpm demo` on a clean checkout, and the Docker stack ([.github/workflows/ci.yml](.github/workflows/ci.yml)); the fork suite runs as a non-blocking job because it depends on the public testnet RPC.
 
 ## Self-host with Docker
 
@@ -100,7 +108,7 @@ Deployment steps are in [docs/DEPLOY.md](docs/DEPLOY.md); running a node in prod
 
 ## Status and honesty notes
 
-- The official HSP SDK repository and the hackathon Coordinator were not reachable when we built this, so the node implements HSP wire v1 behind one interface, with a built-in adapter and verifier, and a Coordinator client ready for credentials.
+- The official HSP SDK repository and the hackathon Coordinator were not reachable when we built this, so the node implements HSP wire v1 behind one interface, with a built-in adapter and verifier, and a Coordinator client ready for credentials that resolves the chain and verifying contract from the Coordinator's `GET /chains`.
 - Per-call and daily caps are enforced by the agent and the node; total cap, allowlist and expiry are additionally enforced on chain. The mandate's `policyHash` commits to the off-chain rules.
 - See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the trust model and known limitations.
 

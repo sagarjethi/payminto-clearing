@@ -37,13 +37,15 @@ Shared code is imported as `@payminto/protocol` (workspace dependency `"@paymint
 `ClearingHub` EIP-712 domain: name `Payminto Clearing`, version `1`, chainId, verifyingContract = hub.
 
 - `openMandate(Mandate m, bytes ownerSig) -> bytes32 mandateId` - anyone may submit; owner may be an EOA or ERC-1271 wallet.
+- `openMandateWithPermit(Mandate m, bytes ownerSig, uint256 permitValue, uint256 permitDeadline, uint8 v, bytes32 r, bytes32 s) -> bytes32 mandateId` - opens the mandate and calls the token's EIP-2612 `permit(agent, hub, ...)` in a try/catch, so the agent needs no native token and sends no transaction.
+  If the permit call fails (front-run, expired, token without permit) the mandate still opens when the agent's allowance already covers `permitValue`; otherwise it reverts with `PermitFailed` and nothing is opened.
 - `revokeMandate(bytes32 id)` - owner or agent; vouchers stay settleable for `REVOKE_GRACE` (1 hour).
 - `settleBatch(bytes32 batchId, bytes32 receiptsRoot, address token, Claim[] claims) -> uint256 transfers` - permissionless; at most 64 claims; one token per batch; reverts `NothingToSettle` when the claims settle nothing (gross 0); stores `msg.sender` as the batch `settler`.
 - `verifyReceipt(bytes32 batchId, bytes32 leaf, bytes32[] proof) -> bool` - only says the leaf is under the stored root; a proof counts only if `batches[batchId].settler` is the trusted node operator and that operator signed the leaf.
 - Views: `mandates(id)`, `settled(id, payee)`, `batches(batchId)`, `mandateDigest`, `voucherDigest`, `settleDeadline`.
 - Events: `MandateOpened`, `MandateRevoked`, `VoucherSettled(batchId, mandateId, payee, delta)`, `NetTransfer(batchId, from, to, amount)`, `BatchSettled(batchId, receiptsRoot, token, claims, gross, net, transfers)`.
 - A Claim carries only the latest cumulative voucher per (mandate, payee); the hub pays `cumulative - settled[mandate][payee]`.
-- Net transfers are `transferFrom(debtor, creditor)` so agents must `approve(hub, ...)` the token once.
+- Net transfers are `transferFrom(debtor, creditor)` so agents must `approve(hub, ...)` the token once, or sign a permit that the node submits with `openMandateWithPermit`.
 
 All TS helpers for these live in `packages/protocol/src` and are tested against a live anvil deployment.
 Use them; do not re-derive EIP-712 types or Merkle encodings anywhere else.
@@ -77,8 +79,18 @@ Local dev: `anvil` then `forge script script/DeployLocal.s.sol --rpc-url http://
 | `SETTLE_MIN_CALLS` | `1` | skip auto-settle below this many unsettled calls |
 | `PUBLIC_URL` | `http://localhost:8787` | advertised in x402 requirements |
 | `HSP_MODE` | `local` | `local` (built-in HSP adapter + verifier) or `coordinator` |
-| `HSP_COORDINATOR_URL`, `HSP_API_KEY`, `HSP_CHAIN_NAME`, `HSP_VERIFYING_CONTRACT` | unset | needed for `coordinator` mode; `HSP_VERIFYING_CONTRACT` defaults to the hub in `local` mode |
+| `HSP_COORDINATOR_URL`, `HSP_API_KEY` | unset | required for `coordinator` mode |
+| `HSP_CHAIN_NAME` | unset | coordinator mode: registry name used only when `GET /chains` has no entry for `CHAIN_ID` |
+| `HSP_VERIFYING_CONTRACT` | the hub (local mode) | coordinator mode: a pin; the node refuses to start when `GET /chains` reports another contract for `CHAIN_ID` |
+| `HSP_REQUIRED_CAPABILITIES` | empty | coordinator mode: comma-separated capabilities committed to in every HSP mandate and sent with each registration |
 | `HSP_COSIGN_TIMEOUT_SEC` | `20` | how long a batch waits for debtor agents to co-sign HSP mandates |
+| `CONFIRM_TAG` | `safe` on 133/177, `latest` on 31337 | head a settlement block must reach before the batch is `confirmed`: `latest`, `safe` or `finalized` |
+| `TX_BUMP_AFTER_BLOCKS` | `5` | send a same-nonce replacement with fees raised 12.5 % when a transaction is not included after this many blocks |
+| `TX_MAX_BUMPS` | `5` | replacements per transaction |
+| `TX_INCLUSION_TIMEOUT_SEC` | `300` | how long the sender waits for inclusion before leaving the batch to the finality tracker |
+| `RPC_RETRIES` | `4` | retries for transient JSON-RPC errors (network, timeouts, 429, 5xx) with exponential backoff and jitter |
+| `RPC_FALLBACK_URLS` | network defaults | comma-separated fallback RPCs, `none` disables |
+| `EAS_ATTEST` | `false` | attest every confirmed batch on the EAS predeploy (needs EAS code on the chain) |
 
 Config is parsed and validated once at startup (zod), with clear errors, and never logged with secrets.
 
@@ -96,20 +108,25 @@ Tables (suggested; refine as needed): `mandates`, `providers`, `calls`, `denials
 
 ### 5.3 Lifecycle
 
-1. Owner creates a mandate (SDK `OwnerClient` or dashboard) and posts it: `POST /v1/mandates` with `{ mandate: MandateJson, ownerSignature, policy, payees: Address[], label }`.
+1. Owner creates a mandate (SDK `OwnerClient` or dashboard) and posts it: `POST /v1/mandates` with `{ mandate: MandateJson, ownerSignature, policy, payees: Address[], label, permit? }`.
    The node checks `mandateId`, signature (EOA via `isMandateSignedBy`; for contract owners accept if `openMandate` succeeds), `policyHash(policy) == mandate.policyHash`, `payeesRoot(payees) == mandate.payeesRoot`.
    The node submits `openMandate` on chain itself (gas paid by operator) unless already open, then status becomes `open`.
-2. Agent wallet must hold the token and `approve(hub, cap)`; the node tracks balance and allowance (refreshed on demand and every 30 s while there are unsettled calls).
+   With `permit: { value, deadline, signature }` (an EIP-2612 permit by the agent for the hub, from `AgentClient.signPermit`) it submits `openMandateWithPermit` instead; a permit that fails without enough allowance is a `400 BAD_PERMIT`.
+2. Agent wallet must hold the token and an allowance for the hub (`approve(hub, cap)`, or the permit above); the node tracks balance and allowance (refreshed on demand and every 30 s while there are unsettled calls).
 3. Provider registers: `POST /v1/providers` (admin) with `{ name, description, payee, priceAtomic, resource, category }` -> `{ id, apiKey }`.
    The API key is shown once and stored hashed (sha256).
 4. Call: agent hits provider -> 402 with requirements -> agent signs voucher with `cumulative = position + price` -> provider middleware calls `POST /v1/vouchers` (provider key) -> node validates and returns a `ClearingReceipt` or a denial -> provider serves or refuses.
 5. Settle: `POST /v1/settlements` (admin) or the interval worker.
    The node takes all `accepted` calls for the token, the latest voucher per (mandate, payee), builds the receipts tree over every call, and picks `batchId = keccak256(abi.encode(chainId, hub, receiptsRoot, batchSeq))`.
    It computes net positions off chain, pre-checks each debtor's balance and allowance, and drops mandates that cannot pay (those calls stay `accepted` and a denial-style warning event is emitted).
+   It screens every agent and payee with the token's `isBlacklisted` (FiatToken, as USDC.e) in one Multicall3 read and drops claims that touch a blacklisted address with a `funds.warning`; tokens without the function have no blacklist.
+   Pairs that still have calls in an unconfirmed batch wait for the next batch.
    It splits into chunks of at most 64 claims.
    HSP co-sign phase: for each projected net transfer it creates an HSP mandate (`buildNetTransferMandate`) and waits up to `HSP_COSIGN_TIMEOUT_SEC` for the debtor agent to co-sign (see 5.5).
-   It simulates then sends `settleBatch`, waits for the receipt, decodes `NetTransfer` events, and compares them with the projection.
-   It marks calls `settled`, writes ledger entries, then runs the HSP step for each net transfer.
+   It simulates, checks the operator can pay gas plus the OP Stack L1 data fee, and sends `settleBatch` (status `submitted`, the signed transaction is stored); if it is not included after `TX_BUMP_AFTER_BLOCKS` blocks it sends a same-nonce replacement with fees raised 12.5 %.
+   At one confirmation the batch is `included`: block, gas used and `l1Fee` (from the OP Stack receipt) are recorded and nothing is booked yet.
+   Once the block is at or below the `CONFIRM_TAG` head (immediately for `latest`) the batch is `confirmed`: it decodes `NetTransfer` events, compares them with the projection, marks calls `settled`, writes ledger entries, attests on EAS when `EAS_ATTEST=true`, then runs the HSP step for each net transfer.
+   A finality tracker (every 2 s and at startup) does the promotion; when a reorg removes the transaction it rebroadcasts the stored signed transaction with the same nonce, and fails the batch (returning its calls to `accepted`) only when the hub has no record of it and its nonce now belongs to another transaction.
 6. Revoke: `POST /v1/mandates/:id/revoke` (admin, or agent-signed) stops new vouchers immediately and submits `revokeMandate` when the operator is the owner's delegate; otherwise the dashboard shows the owner the call to make.
 
 ### 5.4 Voucher validation order (each failure -> a recorded denial with a `DenialRule`)
@@ -126,8 +143,9 @@ Every net transfer of a batch becomes one HSP payment.
 - Debtor agents co-sign: the SDK `AgentClient` polls `GET /v1/agents/:address/cosign` (or receives it in the voucher response as `pendingCosign`) and posts `POST /v1/cosign/:hspPaymentId` with `{ signerProof }`.
   The node verifies with `isHspMandateSignedBy`.
   If a debtor does not co-sign in time, the batch still settles on the strength of its vouchers, and that transfer's HSP record is `UNSIGNED` (shown clearly, never hidden).
-- `HSP_MODE=local`: after the tx confirms, the node acts as the HSP adapter: it checks the `NetTransfer` log matches (payer, recipient, token, amount, batchId), signs a Receipt with the operator key over `{ paymentId, txHash, logIndex, satisfiedCapabilities }`, and runs `hspVerify(required, satisfied)` with satisfied = `proves:settlement-verified:v1`, `proves:payminto-mandate-bound:v1`, `proves:payminto-netting-batch:v1`. Status `ACCEPT` or `REJECT`.
-- `HSP_MODE=coordinator`: `POST {coordinator}/payments` with `{ chain, mandate: { body: wire, signerProof, requiredCapabilities: [] }, attestations: [] }`, then `POST /payments/:id/observe` with `{ txHash }` retrying with backoff on 202, then `GET /payments/:id` until `SETTLED`. Bearer `HSP_API_KEY`. Failures are recorded, retried by a worker, and never block the clearing ledger.
+- `HSP_MODE=local`: after the batch is confirmed, the node acts as the HSP adapter: it checks the `NetTransfer` log matches (payer, recipient, token, amount, batchId), signs a Receipt with the operator key over `{ paymentId, txHash, logIndex, satisfiedCapabilities }`, and runs `hspVerify(required, satisfied)` with satisfied = `proves:settlement-verified:v1`, `proves:payminto-mandate-bound:v1`, `proves:payminto-netting-batch:v1`, plus `attests:payminto-batch-settled:v1` when the batch's EAS attestation (schema `bytes32 batchId,bytes32 receiptsRoot,uint256 gross,uint256 net,uint256 transfers`, attester the operator, recipient the hub) verifies on chain. Status `ACCEPT` or `REJECT`.
+- `HSP_MODE=coordinator`: at startup `GET {coordinator}/chains`, resolve this chain by `chainId` (registry name and `verifyingContract`; `HSP_CHAIN_NAME` only as a fallback) and refuse to start when a pinned `HSP_VERIFYING_CONTRACT` differs.
+  Per payment `POST {coordinator}/payments` with `{ chain, mandate: { body: wire, signerProof, requiredCapabilities }, attestations: [] }` where `requiredCapabilities` is `HSP_REQUIRED_CAPABILITIES` (the same set hashed into the mandate), then `POST /payments/:id/observe` with `{ txHash }` retrying with backoff on 202, then `GET /payments/:id` until `SETTLED`. Bearer `HSP_API_KEY`. Failures are recorded, retried by a worker, and never block the clearing ledger.
 - Implement both behind one `HspPort` interface so swapping in the official `@hsp/sdk` later is mechanical.
 
 ### 5.6 HTTP API
@@ -137,7 +155,7 @@ Auth: `Authorization: Bearer <ADMIN_TOKEN>` for admin routes, `Authorization: Be
 
 Public:
 - `GET /healthz` -> `{ ok, chainId, hub, token, operator, blockNumber, hspMode }`
-- `GET /v1/info` -> network, hub, token `{ address, symbol, decimals }`, explorer base, node operator address, version.
+- `GET /v1/info` -> network, hub, token `{ address, symbol, decimals }`, explorer base, node operator address, version, `hsp: { mode, verifyingContract, requiredCapabilities, cosignTimeoutSec }` (the resolved HSP domain) and `settlement: { intervalSec, minCalls, maxClaimsPerBatch, confirmTag, easAttest }`.
 - `GET /v1/providers` -> public catalog `[{ id, name, description, payee, priceAtomic, resource, category, calls24h }]`.
 - `GET /v1/mandates/:id/position?payee=0x..` -> `{ mandateId, payee, cumulative, settled }` (agents use this to sign the next voucher).
 - `GET /v1/mandates/:id/policy` -> `{ id, status, mandate: MandateJson, policy, payees }`, so agents can enforce their own policy before signing (they verify `policyHash` and `payeesRoot` against the mandate).
@@ -158,12 +176,14 @@ Admin:
 - `GET /v1/denials?limit=`.
 - `GET /v1/batches`, `GET /v1/batches/:id` (claims, net transfers with HSP status, tx hash, explorer link, gross, net, calls).
 - `POST /v1/settlements` -> starts a settlement; returns `{ batchIds }` or `{ skipped: reason }`.
+- `POST /v1/mandates` takes an optional `permit: { value, deadline, signature }` (EIP-2612 by the agent for the hub); errors `400 BAD_PERMIT`.
 - `GET /v1/ledger?account=&limit=` and `GET /v1/ledger/trial-balance` (must always balance to zero).
 - `GET /v1/netting/preview` -> what settling now would do: gross obligations graph `[{ from, to, amount, calls }]`, net transfers, compression.
 
 ### 5.7 SSE events
 
-`event: <type>` with JSON `data`. Types: `call.accepted`, `call.denied`, `mandate.opened`, `mandate.revoked`, `batch.started`, `batch.submitted`, `batch.confirmed`, `batch.failed`, `hsp.updated`, `funds.warning`.
+`event: <type>` with JSON `data`. Types: `call.accepted`, `call.denied`, `mandate.opened`, `mandate.revoked`, `batch.started`, `batch.submitted`, `batch.included`, `batch.confirmed`, `batch.failed`, `hsp.updated`, `funds.warning`.
+`batch.submitted` repeats for every same-nonce replacement and when a reorg sends a batch back to `submitted`; `batch.confirmed` repeats once more when the batch's EAS attestation lands.
 Every payload carries `id`, `at` (ISO time) and the relevant entity in its API shape.
 
 ### 5.8 Ledger
@@ -196,9 +216,13 @@ MandateDetail = Mandate & { ownerSignature, revokedBy, revokeTxHash, openTxExplo
 Provider = { id, name, description, payee, priceAtomic, resource, category, calls24h }
 ProviderDetail = Provider & { createdAt, callsTotal, denials: number, revenue: { settled, pending }, recentCalls: Call[] }
 ProviderCreated = Provider & { createdAt, apiKey }                           // apiKey shown once
-Batch = { id, seq, status: "building" | "cosigning" | "submitted" | "confirmed" | "failed", token, receiptsRoot,
+Batch = { id, seq, status: "building" | "cosigning" | "submitted" | "included" | "confirmed" | "failed", token, receiptsRoot,
           claims, calls, transfers, gross, net, projectedGross, projectedNet, compression: number | null,
-          reconciled: boolean | null, txHash, explorerUrl, blockNumber, gasUsed, error, trigger, createdAt, submittedAt, confirmedAt }
+          reconciled: boolean | null, txHash, explorerUrl, blockNumber, gasUsed, l1Fee: string | null, replacements: number,
+          error, trigger, createdAt, submittedAt, includedAt: string | null, confirmedAt,
+          attestation: { uid, txHash, explorerUrl } | null }
+// included = one confirmation (nothing booked yet); confirmed = block at or below the CONFIRM_TAG head (ledger, HSP, EAS done).
+// l1Fee is the OP Stack L1 data fee in wei from the receipt (null off OP Stack chains); replacements counts same-nonce fee bumps.
 BatchDetail = Batch & { claimList: [{ index, mandateId, agent, payee, cumulative, previous, delta, calls }],
           netTransfers: [{ index, from, to, amount, logIndex, hsp: Hsp | null }], callList: Call[] }
 Hsp = { paymentId, batchId, transferIndex, payer, recipient, token, amount, deadline,
@@ -210,7 +234,8 @@ Hsp = { paymentId, batchId, transferIndex, payer, recipient, token, amount, dead
 - `GET /v1/overview` -> `{ volume: { settled, pending, last24h }, calls: { all, last24h, pending, settled }, denials24h, denialsTotal, activeMandates, mandates, providers, batches, batchesConfirmed, batchesFailed, transfers, gasSaved: { gas, native: string | null, used, naive, perTransferAssumption }, compressionRatio, lastBatch: Batch | null, unsettledCalls, token: { address, symbol, decimals } }`.
   `compressionRatio` is settled calls per on-chain transfer and is `0` before the first transfer; `gasSaved` compares against one ERC-20 transfer per call at the gas measured in `docs/GAS.md` (34,444).
 - `GET /v1/netting/preview` -> `{ calls, claims, batches, grossTotal, netTotal, gross: [{ from, to, amount, calls }], net: [{ from, to, amount }], transfers, compression, savedTransfers }` (`compression` is `0` when there is nothing to settle).
-- `POST /v1/settlements` -> `{ batchIds, batches: Batch[], dropped: [{ mandateId, payee, reason }] }` or `{ skipped: reason }`; it returns after the batches are confirmed or failed.
+- `POST /v1/settlements` -> `{ batchIds, batches: Batch[], dropped: [{ mandateId, payee, reason }] }` or `{ skipped: reason }`; it returns once each batch is included (and already confirmed when `CONFIRM_TAG=latest`, the anvil default) or failed; the finality tracker confirms the rest.
+  `dropped[].reason` includes `agent 0x.. is blacklisted by the settlement token` and `payee 0x.. is blacklisted by the settlement token`.
 - `GET /v1/receipts/:callId/proof` -> `{ receipt: ClearingReceipt, status, batchId, batchStatus, receiptsRoot, proof, leaf, txHash, explorerUrl, onchainVerified }`; batch fields are `null` and `proof` is `[]` until the call is batched, and `onchainVerified` is `null` until the batch is confirmed.
 - `GET /v1/ledger` -> `[{ id, journalId, kind, ref, account, debit, credit, memo, createdAt }]`; `account` also matches a prefix such as `agent:0x...`.
 - `GET /v1/ledger/trial-balance` -> `{ balanced, totalDebit, totalCredit, balance, journals, accounts: [{ account, debit, credit, balance }] }`, where `balance` is always `"0"`.
@@ -233,10 +258,15 @@ await owner.submit({ mandate, ownerSignature, policy, payees, label }); // POST 
 
 // Agent side
 const agent = new AgentClient({ nodeUrl, chainId, hub, account, mandateId, storePath: "./agent.receipts.db", autoCosign: true });
-await agent.ensureAllowance(walletClient, amount); // one-time approve(hub)
+await agent.ensureAllowance(walletClient, amount); // one-time approve(hub), the agent pays gas
+// or gasless: an EIP-2612 permit (read-only calls), which the node submits with openMandateWithPermit
+const permit = await agent.signPermit({ token, value: cap, publicClient });
+await owner.submit({ mandate, ownerSignature, policy, payees, label, permit }); // the agent sends 0 transactions
 const res = await agent.fetch("https://provider.example/quote?pair=HSK-USDC"); // handles 402 -> voucher -> retry
 agent.on("receipt", r => ...); agent.on("denied", d => ...);
 agent.startCosignLoop(); // signs pending HSP mandates for its own net debits, verifying amounts against its own receipts
+// signPermit takes the token's EIP-712 domain from chains.ts for the network token (USDC.e: "Bridged USDC", version "2"),
+// else from ERC-5267 eip712Domain(), and refuses unless it matches the token's DOMAIN_SEPARATOR().
 
 // Provider side (framework-agnostic fetch handler wrapper, plus a Hono middleware)
 const pay = paywall({ nodeUrl, providerId, apiKey, price, description });

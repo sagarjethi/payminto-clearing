@@ -59,6 +59,7 @@ It refuses to start unless every one of these holds, before touching the chain:
 - `DEMO_ADMIN_TOKEN` is set, and `DEMO_RPC_URL` (or the network default) serves the declared chain.
 
 Agent wallets must already hold the token; the demo approves the hub for exactly the mandate cap, never unlimited.
+The Research Writer never approves: it signs an EIP-2612 permit for its cap and the node opens its mandate with `openMandateWithPermit`, and the run checks that it sent 0 transactions.
 
 ```sh
 DEMO_CHAIN_ID=133 DEMO_LIVE_NETWORK_CONFIRM=yes DEMO_CALLS=100 DEMO_MAX_SPEND_USDC=0.1 \
