@@ -1,6 +1,6 @@
 # Payminto Clearing demo
 
-Three paid services, three agents and the scripted judge demo from `docs/DEMO_SCRIPT.md`, on the real stack: ClearingHub, the Clearing Node, the SDK paywall, `AgentClient` and the MCP server.
+Three paid services, three agents and the scripted live demo, on the real stack: ClearingHub, the Clearing Node, the SDK paywall, `AgentClient` and the MCP server.
 The build contract is `docs/SPEC.md` section 8.
 
 ## One command
@@ -21,7 +21,7 @@ Ctrl-C stops the node, providers and anvil; anvil also runs under a watchdog tha
 pnpm demo:stage
 ```
 
-Same stack, paced (about 14 calls per second, `DEMO_STAGE_PACE`), advancing one `DEMO_SCRIPT.md` step per Enter: mandate, agents buying with the two attacks, netting preview, settle (click Settle now in the dashboard, or press Enter in the terminal), batch with HSP status, a judge-picked call proven on chain, and the books.
+Same stack, paced (about 14 calls per second, `DEMO_STAGE_PACE`), advancing one demo step per Enter: mandate, agents buying with the two attacks, netting preview, settle (click Settle now in the dashboard, or press Enter in the terminal), batch with HSP status, a judge-picked call proven on chain, and the books.
 Node and providers keep running afterwards so the dashboard stays live; Ctrl-C stops everything.
 Start the dashboard in a second terminal with the URL the demo prints, for example:
 

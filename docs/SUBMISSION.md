@@ -155,7 +155,7 @@ We did not find another agent payment product that nets obligations across many 
 
 ### Business model
 
-- **Free and open source core (MIT),** in line with the parent Payminto gateway: the node, SDK, MCP server and contracts.
+- **Free and open source core (MIT):** the node, SDK, MCP server and contracts.
 - **Zero per-call take rate.** We never sit in the money path, so we never charge a percentage of it.
 - **Enterprise licence:** SSO, role-based approvals on mandates, audit and tax exports, priority support, SLAs.
 - **Managed Clearing Node:** we run and monitor the node for providers who do not want to, priced per node per month.
@@ -171,19 +171,17 @@ We did not find another agent payment product that nets obligations across many 
 
 ### Team
 
-Replace role labels with names and handles before submitting.
+List only people who actually contributed, and add each of them on DoraHacks.
 
-| Role | Person | Owns |
+| Person | Role | Owns |
 |---|---|---|
-| Founder, product and pitch | Sagar Jethi `<HANDLE>` | Product, HashKey relationship, Demo Day pitch |
-| Principal engineer | `<NAME>` | `ClearingHub.sol`, protocol package, Foundry tests |
-| Backend engineer | `<NAME>` | Clearing Node, SDK, HSP adapter |
-| Frontend engineer and UI/UX | `<NAME>` | Dashboard |
-| Agent engineer | `<NAME>` | MCP server, demo agents and providers |
-| Marketing and hackathon strategy | `<NAME>` | Submission, deck, demo script, launch |
+| Sagar Jethi `<HANDLE>` | Founder, engineering and pitch | Product, contracts, node, SDK, dashboard, Demo Day pitch |
+| `<ADD REAL TEAMMATES OR DELETE THIS ROW>` | | |
 
-Payminto is an existing open-source, self-hosted payment gateway (https://payminto.io).
-Payminto Clearing was built from scratch during the hackathon period: new contracts, new node, new SDK.
+Built with AI-assisted engineering: the founder directed the work and reviewed and tested every component.
+
+Payminto (https://payminto.io) is our self-hosted payment gateway for merchants.
+Payminto Clearing was built from scratch during the hackathon period: new contracts, new node, new SDK, all open source under MIT.
 
 ---
 
@@ -213,7 +211,7 @@ The live dashboard must never expose the `ADMIN_TOKEN`; deploy a read-only view 
 
 ## Submission requirement checklist
 
-Source: the requirements quoted in `research/02-judges-criteria-winners.md` section 3.1 from the DoraHacks and Luma pages.
+Source: the requirements on the DoraHacks hackathon page and the Luma Demo Day page; re-read both on submission day.
 The DoraHacks page itself sits behind a WAF challenge from our tooling, so one human must re-read it in a browser on submission day and add anything missing here.
 
 | # | Requirement | How we satisfy it | Status |
@@ -224,11 +222,11 @@ The DoraHacks page itself sits behind a WAF challenge from our tooling, so one h
 | 4 | Strong completeness, technical maturity and innovation | End-to-end flow on mainnet, Foundry tests, one E2E test on anvil, policy unit tests for all 13 rules, balanced ledger; novelty is on-chain multilateral netting plus per-call proofs | `<CHECK>` |
 | 5 | Officially recommended products and frameworks earn extra points | HSP wire v1 (and `@hsp/sdk` if released in time), canonical HashKey Chain USDC.e token contract, Safe as mandate owner via ERC-1271, Blockscout verification; list them on one slide | `<CHECK>` |
 | 6 | In-person Mumbai demo teams get priority for pitch selection | Sagar presents in person at ATLAS SkillTech University on Nov 4; state "attending in person" in the BUIDL text | `<CHECK>` |
-| 7 | Demo Day: live pitch plus Q&A, 3 judges in room, 2 HashKey judges remote | `docs/PITCH.md`, `docs/DEMO_SCRIPT.md`, `docs/JUDGE_QA.md`; screen-share works for remote judges | `<CHECK>` |
+| 7 | Demo Day: live pitch plus Q&A, 3 judges in room, 2 HashKey judges remote | `pnpm demo:stage` walks the live demo step by step; screen-share works for remote judges | `<CHECK>` |
 | 8 | BUIDL form: name, logo, tagline, description | This file; logo `<LOGO_PATH>` (square PNG, at least 512 px) | `<CHECK>` |
 | 9 | BUIDL form: public GitHub repo | `<GITHUB_URL>`, README with quickstart (`pnpm demo`), license MIT | `<CHECK>` |
-| 10 | BUIDL form: demo video | `<DEMO_VIDEO_URL>`, 2 minutes, shot list in `docs/DEMO_SCRIPT.md` | `<CHECK>` |
-| 11 | BUIDL form: team members added on DoraHacks | All five DoraHacks accounts invited and accepted | `<CHECK>` |
+| 10 | BUIDL form: demo video | `<DEMO_VIDEO_URL>`, 2 minutes, recorded from `pnpm demo:stage` | `<CHECK>` |
+| 11 | BUIDL form: team members added on DoraHacks | Every real contributor invited and accepted | `<CHECK>` |
 | 12 | Track selected | Agent Payments & A2A Settlement | `<CHECK>` |
 | 13 | Submitted before 2026-11-01 21:30 IST | Target 12:00 IST same day | `<CHECK>` |
 
