@@ -228,3 +228,34 @@ export function layoutFlow(obligations: readonly Obligation[], opts: FlowLayoutO
 function round(n: number) {
   return Math.round(n * 100) / 100;
 }
+
+export type BeforeAfter = {
+  /** Without netting: one ERC-20 transfer per accepted call, moving the gross amount. */
+  before: { transfers: number; amount: bigint };
+  /** With netting: the hub's net wallet-to-wallet transfers. */
+  after: { transfers: number; amount: bigint };
+  /** How many times fewer on-chain transfers netting needs, 0 when there is nothing to settle. */
+  fewer: number;
+  /** Share of the gross value that does not need to move, in percent with one decimal. */
+  valueSavedPct: number;
+};
+
+/**
+ * The before-versus-after figures for the Netting hero.
+ * Calls fall back to the per-pair call counts when the node omits the total.
+ */
+export function beforeAfter(p: {
+  gross: readonly { amount: string; calls?: number }[];
+  net: readonly { amount: string }[];
+  grossTotal?: string;
+  netTotal?: string;
+  calls?: number;
+}): BeforeAfter {
+  const calls = p.calls ?? p.gross.reduce((n, g) => n + (g.calls ?? 1), 0);
+  const gross = p.grossTotal !== undefined ? BigInt(p.grossTotal) : sumAmounts(p.gross);
+  const net = p.netTotal !== undefined ? BigInt(p.netTotal) : sumAmounts(p.net);
+  const transfers = p.net.length;
+  const fewer = transfers > 0 ? calls / transfers : 0;
+  const valueSavedPct = gross > 0n ? Number(((gross - net) * 1000n) / gross) / 10 : 0;
+  return { before: { transfers: calls, amount: gross }, after: { transfers, amount: net }, fewer, valueSavedPct };
+}

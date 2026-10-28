@@ -1,22 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, CircleDashed, Loader2, Waypoints } from "lucide-react";
+import { ArrowRight, Check, CheckCircle2, CircleDashed, Loader2, Waypoints } from "lucide-react";
 import { toast } from "sonner";
 import { useApi } from "@/lib/session";
 import { useLive } from "@/lib/live";
 import { qk, useDirectory, useNettingPreview, useToken } from "@/lib/queries";
-import { formatInt, formatMoney, formatRatio } from "@/lib/format";
-import { netPositions, sumAmounts } from "@/lib/netting";
+import { formatInt } from "@/lib/format";
+import { beforeAfter, netPositions } from "@/lib/netting";
 import { cn } from "@/lib/utils";
-import type { NettingPreview } from "@/lib/schemas";
+import type { BatchDetail, NettingPreview } from "@/lib/schemas";
 import { ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { FlowGraph } from "@/components/app/flow-graph";
 import { Hash, Money, PageHeader, Panel } from "@/components/app/primitives";
-import { StatStrip } from "@/components/app/stat-strip";
+import { NettingHero } from "@/components/app/netting-hero";
 import { TransferRow } from "@/components/app/transfer-row";
 import { BlockSkeleton, EmptyState, ErrorState } from "@/components/app/states";
 
@@ -128,7 +128,36 @@ export default function NettingPage() {
         </Panel>
       ) : (
         <>
-          <Summary preview={shown} />
+          <NettingHero
+            figures={beforeAfter(shown)}
+            settled={phase === "done"}
+            action={
+              phase === "done" && result.data ? (
+                <Confirmed
+                  batch={result.data}
+                  onBack={() => {
+                    setPhase("idle");
+                    setSnapshot(null);
+                    setBatchId(null);
+                  }}
+                />
+              ) : (
+                <>
+                  {(phase === "settling" || phase === "failed") && <Progress stepIndex={stepIndex} failed={phase === "failed"} error={error} />}
+                  {phase !== "settling" && (
+                    <Button size="lg" className="h-12 w-full text-[0.9375rem]" onClick={() => settle.mutate()} disabled={shown.net.length === 0}>
+                      {phase === "failed" ? "Try settling again" : "Settle now"} <ArrowRight />
+                    </Button>
+                  )}
+                  {phase === "idle" && (
+                    <p className="text-xs text-muted-foreground">
+                      One settleBatch transaction. The node pays only gas; funds move directly between agent and provider wallets.
+                    </p>
+                  )}
+                </>
+              )
+            }
+          />
           <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
             <Panel
               title="Gross obligations"
@@ -154,7 +183,7 @@ export default function NettingPage() {
               bodyClassName="flex flex-col gap-5"
             >
               {phase === "done" && result.data ? (
-                <SettledResult batch={result.data} snapshot={shown} />
+                <SettledResult batch={result.data} />
               ) : (
                 <>
                   <ul className="divide-y rounded-lg border">
@@ -178,61 +207,13 @@ export default function NettingPage() {
                     </p>
                   )}
 
-                  {phase === "settling" || phase === "failed" ? (
-                    <Progress stepIndex={stepIndex} failed={phase === "failed"} error={error} />
-                  ) : null}
-
-                  <div className="mt-auto flex flex-col gap-2">
-                    <Button
-                      size="lg"
-                      className="h-12 w-full text-[0.9375rem]"
-                      onClick={() => settle.mutate()}
-                      disabled={phase === "settling" || shown.net.length === 0}
-                    >
-                      {phase === "settling" ? <Loader2 className="animate-spin" /> : null}
-                      {phase === "settling" ? "Settling" : phase === "failed" ? "Try settling again" : "Settle now"}
-                    </Button>
-                    <p className="text-center text-xs text-muted-foreground">
-                      Anyone can submit settleBatch; the node pays only gas. Funds move directly between agent and provider wallets.
-                    </p>
-                  </div>
                 </>
               )}
             </Panel>
           </div>
-          {phase === "done" && (
-            <div className="mt-4 flex justify-end">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setPhase("idle");
-                  setSnapshot(null);
-                  setBatchId(null);
-                }}
-              >
-                Back to live netting
-              </Button>
-            </div>
-          )}
         </>
       )}
     </>
-  );
-}
-
-function Summary({ preview }: { preview: NettingPreview }) {
-  const gross = preview.grossTotal ? BigInt(preview.grossTotal) : sumAmounts(preview.gross);
-  const net = preview.netTotal ? BigInt(preview.netTotal) : sumAmounts(preview.net);
-  const saved = gross > 0n ? Number(((gross - net) * 1000n) / gross) / 10 : 0;
-  return (
-    <StatStrip
-      stats={[
-        { label: "Calls waiting", value: <span className="num">{formatInt(preview.calls ?? 0)}</span>, note: "accepted since the last batch" },
-        { label: "Gross obligations", value: <Money atomic={gross} maxFraction={4} />, note: `${preview.gross.length} payer-payee pairs` },
-        { label: "Moved on chain", value: <Money atomic={net} maxFraction={4} />, note: gross > 0n ? `${saved.toFixed(1)}% less than gross` : undefined, tone: "positive" },
-        { label: "Compression", value: <span className="num">{formatRatio(preview.compression)}</span>, note: "calls per on-chain transfer" },
-      ]}
-    />
   );
 }
 
@@ -284,7 +265,7 @@ function NetPositions({ preview, nameOf }: { preview: NettingPreview; nameOf: (a
 
 function Progress({ stepIndex, failed, error }: { stepIndex: number; failed: boolean; error: string | null }) {
   return (
-    <ol className="space-y-2.5 rounded-lg bg-muted/60 p-4" aria-live="polite">
+    <ol className="space-y-2.5" aria-live="polite" aria-label="Settlement progress">
       {STEPS.map((s, i) => {
         const done = i < stepIndex;
         const current = i === stepIndex && !failed;
@@ -306,48 +287,44 @@ function Progress({ stepIndex, failed, error }: { stepIndex: number; failed: boo
   );
 }
 
-function SettledResult({ batch, snapshot }: { batch: import("@/lib/schemas").BatchDetail; snapshot: NettingPreview }) {
-  const token = useToken();
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    // On narrow screens the result sits below the graph; bring it into view once it lands.
-    if (window.matchMedia("(max-width: 1279px)").matches) {
-      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      ref.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
-    }
-  }, []);
-  const ratio = batch.transfers > 0 ? batch.calls / batch.transfers : 0;
-  const gross = BigInt(batch.gross);
-  const net = BigInt(batch.net);
+function Confirmed({ batch, onBack }: { batch: BatchDetail; onBack: () => void }) {
   return (
-    <div ref={ref} className="flex scroll-mt-20 flex-col gap-5 animate-in fade-in-0 slide-in-from-bottom-1 duration-500">
-      <div className="rounded-lg bg-positive-soft px-4 py-4">
-        <p className="flex items-center gap-2 text-sm font-medium text-positive">
-          <Check className="size-4" /> Batch #{batch.seq} confirmed
-        </p>
-        <p className="mt-3 text-[2.5rem] leading-none font-semibold tracking-[-0.03em] text-foreground">
-          <span className="num">{formatRatio(ratio)}</span>
-          <span className="ml-2 text-base font-normal tracking-normal text-muted-foreground">calls per on-chain transfer</span>
-        </p>
-        <p className="mt-2 text-sm text-muted-foreground">
-          <span className="num">{formatInt(batch.calls)}</span> calls and{" "}
-          <span className="num">{formatMoney(gross, token.decimals, { maxFraction: 4 })}</span> {token.symbol} of obligations cleared with{" "}
-          <span className="num">{batch.transfers}</span> transfers moving{" "}
-          <span className="num">{formatMoney(net, token.decimals, { maxFraction: 4 })}</span> {token.symbol}.
-        </p>
+    <div className="flex flex-col gap-3 animate-in fade-in-0 duration-500" role="status">
+      <p className="flex items-center gap-2 font-medium text-positive">
+        <CheckCircle2 className="size-5" /> Batch #{batch.seq} confirmed
+      </p>
+      <p className="text-sm text-muted-foreground">Settled on HashKey Chain in one transaction. The hub verified every voucher signature and cap before moving funds.</p>
+      <div className="text-sm">
+        <p className="text-xs text-muted-foreground">Settlement transaction</p>
+        <Hash value={batch.txHash} kind="tx" className="mt-0.5" />
       </div>
+      <div className="flex flex-col gap-2 sm:flex-row xl:flex-col">
+        <Button asChild className="flex-1">
+          <Link href={`/batches/${batch.id}`}>Open batch #{batch.seq}</Link>
+        </Button>
+        <Button variant="outline" className="flex-1" onClick={onBack}>
+          Back to live netting
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function SettledResult({ batch }: { batch: BatchDetail }) {
+  return (
+    <div className="flex flex-col gap-4 animate-in fade-in-0 slide-in-from-bottom-1 duration-500">
       <dl className="grid gap-2 text-sm">
         <div className="flex items-center justify-between gap-3">
-          <dt className="text-muted-foreground">Transaction</dt>
-          <dd>
-            <Hash value={batch.txHash} kind="tx" />
-          </dd>
+          <dt className="text-muted-foreground">Calls cleared</dt>
+          <dd className="num font-medium">{formatInt(batch.calls)}</dd>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <dt className="text-muted-foreground">Batch id</dt>
-          <dd>
-            <Hash value={batch.id} href={`/batches/${batch.id}`} />
-          </dd>
+          <dt className="text-muted-foreground">Gross obligations</dt>
+          <dd><Money atomic={batch.gross} maxFraction={4} /></dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt className="text-muted-foreground">Moved on chain</dt>
+          <dd><Money atomic={batch.net} maxFraction={4} className="font-medium" /></dd>
         </div>
       </dl>
       <ul className="divide-y rounded-lg border">
@@ -358,15 +335,16 @@ function SettledResult({ batch, snapshot }: { batch: import("@/lib/schemas").Bat
             to={t.to}
             amount={t.amount}
             status={t.hsp?.status ?? null}
+            marker={
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-positive-soft">
+                <Check className="size-3.5 text-positive" />
+              </span>
+            }
             className="animate-in fade-in-0 fill-mode-both"
             style={{ animationDelay: `${150 + i * 120}ms` }}
           />
         ))}
       </ul>
-      <Button asChild variant="outline">
-        <Link href={`/batches/${batch.id}`}>Open batch #{batch.seq}</Link>
-      </Button>
-      <span className="sr-only">{snapshot.calls} calls were in the netting snapshot.</span>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getAddress } from "viem";
-import { aggregateObligations, layoutFlow, netPositions, netTransfers, sumAmounts } from "@/lib/netting";
+import { aggregateObligations, beforeAfter, layoutFlow, netPositions, netTransfers, sumAmounts } from "@/lib/netting";
 
 const A = getAddress("0x00000000000000000000000000000000000000a1"); // Treasury Agent
 const B = getAddress("0x00000000000000000000000000000000000000b2"); // Trading Agent
@@ -96,5 +96,32 @@ describe("flow graph layout", () => {
     const empty = layoutFlow([], { width: 300 });
     expect(empty.nodes).toEqual([]);
     expect(empty.links).toEqual([]);
+  });
+});
+
+describe("beforeAfter", () => {
+  it("compares one transfer per call with the net transfers", () => {
+    const net = netTransfers(gross);
+    const r = beforeAfter({ gross, net });
+    expect(r.before.transfers).toBe(230);
+    expect(r.before.amount).toBe(1_100_000n);
+    expect(r.after.transfers).toBe(net.length);
+    expect(r.after.amount).toBe(sumAmounts(net));
+    expect(r.fewer).toBeCloseTo(230 / net.length);
+    expect(r.valueSavedPct).toBeGreaterThan(0);
+    expect(r.valueSavedPct).toBeLessThan(100);
+  });
+
+  it("prefers the node's totals and handles an empty preview", () => {
+    expect(beforeAfter({ gross: [], net: [], calls: 0 })).toEqual({
+      before: { transfers: 0, amount: 0n },
+      after: { transfers: 0, amount: 0n },
+      fewer: 0,
+      valueSavedPct: 0,
+    });
+    const r = beforeAfter({ gross: [{ amount: "1", calls: 1 }], net: [{ amount: "1" }], grossTotal: "1000", netTotal: "250", calls: 143 });
+    expect(r.before).toEqual({ transfers: 143, amount: 1000n });
+    expect(r.after.amount).toBe(250n);
+    expect(r.valueSavedPct).toBe(75);
   });
 });
