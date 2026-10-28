@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Ban, FileSignature, Layers, Radio, Waypoints } from "lucide-react";
+import { ArrowRight, FileSignature, Layers, Radio, ShieldBan, ShieldCheck, Waypoints } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useBatches, useCalls, useDenials, useDirectory, useMandates, useNettingPreview, useOverview, useProviders, useToken } from "@/lib/queries";
 import { formatGas, formatInt, formatMoney, formatRatio, timeAgo } from "@/lib/format";
@@ -12,6 +12,8 @@ import { axisTick, chartColor } from "@/lib/chart-theme";
 import { Button } from "@/components/ui/button";
 import { Money, PageHeader, Panel } from "@/components/app/primitives";
 import { BatchStatusChip, RuleChip } from "@/components/app/status";
+import { NoMoneyMoved } from "@/components/app/denial";
+import { RULE_INFO, asSentence, ruleTitle } from "@/lib/denials";
 import { StatStrip } from "@/components/app/stat-strip";
 import { BlockSkeleton, EmptyState, ErrorState, RowsSkeleton } from "@/components/app/states";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -62,6 +64,7 @@ export default function OverviewPage() {
           </div>
           <div className="flex min-w-0 flex-col gap-5">
             <PendingCard />
+            <BlockedCard />
             <Timeline />
           </div>
         </div>
@@ -85,7 +88,7 @@ function Kpis() {
         },
         { label: "Gas saved", value: <span className="num">{formatGas(data.gasSaved.gas)}</span>, note: "vs one transfer per call" },
         {
-          label: "Denials, last 24h",
+          label: "Blocked, last 24h",
           value: <span className={cn("num", data.denials24h > 0 && "text-negative")}>{formatInt(data.denials24h)}</span>,
           note: data.denials24h > 0 ? "refused, no money moved" : "every voucher passed",
         },
@@ -266,11 +269,13 @@ function LiveStream() {
                 </time>
               </li>
             ) : (
-              <li key={r.denial.id} className={cn(fresh.has(r.denial.id) && "row-in", "flex items-center gap-3 bg-negative-soft/50 px-4 py-2.5 text-sm sm:px-5")}>
-                <Ban className="size-3.5 shrink-0 text-negative" aria-label="Denied" />
+              <li key={r.denial.id} className={cn(fresh.has(r.denial.id) && "row-in", "flex items-center gap-3 bg-negative-soft/60 px-4 py-2.5 text-sm sm:px-5")}>
+                <ShieldBan className="size-3.5 shrink-0 text-negative" aria-hidden />
                 <span className="min-w-0 flex-1 truncate">
+                  <span className="font-medium text-negative">Blocked</span>
+                  <span className="text-subtle"> </span>
                   <span className="font-medium">{name(r.denial.agent)}</span>
-                  <span className="text-subtle"> refused paying </span>
+                  <span className="text-subtle"> to </span>
                   <span className="font-medium">{name(r.denial.payee)}</span>
                 </span>
                 <RuleChip rule={r.denial.rule} />
@@ -314,6 +319,71 @@ function PendingCard() {
           <Button asChild className="mt-4 w-full">
             <Link href="/netting">
               Review and settle <ArrowRight />
+            </Link>
+          </Button>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** The latest refusal, stated as an outcome: what was tried, which rule stopped it, and that nothing moved. */
+function BlockedCard() {
+  const denials = useDenials();
+  const overview = useOverview();
+  const dir = useDirectory();
+  // Lead with the most recent attack when there is one; an honest agent hitting a cap is less telling.
+  const latest = denials.data?.find((d) => RULE_INFO[d.rule]?.kind === "attack") ?? denials.data?.[0];
+  const n24 = overview.data?.denials24h ?? 0;
+  const name = (a: string | null | undefined) => (a ? dir.lookup(a)?.name ?? `${a.slice(0, 8)}…` : "an unknown wallet");
+  return (
+    <section className="rounded-xl border bg-card p-5" aria-labelledby="blocked-title">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 id="blocked-title" className="text-[0.9375rem] font-semibold">
+            Attacks and overspend blocked
+          </h2>
+          <p className="mt-0.5 text-[0.8125rem] text-muted-foreground">Refused by mandate policy before any money moved</p>
+        </div>
+        <span className={cn("num text-[1.75rem] leading-none font-semibold tracking-[-0.02em]", n24 > 0 ? "text-negative" : "text-muted-foreground")}>
+          {formatInt(n24)}
+          <span className="sr-only"> blocked in the last 24 hours</span>
+        </span>
+      </div>
+      {denials.isPending ? (
+        <Skeleton className="mt-4 h-20 w-full" />
+      ) : !latest ? (
+        <p className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+          <ShieldCheck className="size-4 text-positive" /> Every voucher so far stayed inside its mandate.
+        </p>
+      ) : (
+        <>
+          <div className="mt-4 rounded-lg border border-negative/25 bg-negative-soft/60 p-3.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <ShieldBan className="size-4 text-negative" aria-hidden />
+              <span className="text-sm font-medium">{ruleTitle(latest.rule)}</span>
+              <RuleChip rule={latest.rule} />
+            </div>
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              <span className="text-foreground">{name(latest.agent)}</span> tried to pay <span className="text-foreground">{name(latest.payee)}</span>
+              {latest.amount ? (
+                <>
+                  {" "}
+                  <Money atomic={latest.amount} className="text-foreground" />
+                </>
+              ) : null}
+              . {asSentence(latest.message)}
+            </p>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <NoMoneyMoved />
+              <time className="num text-xs text-subtle" dateTime={latest.createdAt}>
+                {timeAgo(latest.createdAt)}
+              </time>
+            </div>
+          </div>
+          <Button asChild variant="outline" className="mt-3 w-full">
+            <Link href="/denials">
+              See all blocked calls <ArrowRight />
             </Link>
           </Button>
         </>
