@@ -3,11 +3,12 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { CheckCircle2, CircleDashed, XCircle } from "lucide-react";
+import { Check, CheckCircle2, CircleDashed, HelpCircle, X, XCircle } from "lucide-react";
 import type { Hex } from "viem";
 import { useMandates, useProof } from "@/lib/queries";
 import { formatDateTime, shortHash } from "@/lib/format";
 import { replayProof } from "@/lib/merkle-path";
+import { isVerified, proofChecks, type CheckState } from "@/lib/proof";
 import { cn } from "@/lib/utils";
 import type { ReceiptProof } from "@/lib/schemas";
 import { Button } from "@/components/ui/button";
@@ -53,7 +54,7 @@ export default function ProofPage() {
 
   return (
     <>
-      <PageHeader back={back} title="Receipt proof" description={<span className="hash break-all text-sm">{callId}</span>} />
+      <PageHeader back={back} title="Call receipt" description={<span className="hash break-all text-sm">{callId}</span>} />
       <Verdict p={p} />
       <div className="mt-5 grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
         <Panel title="Receipt" description="Signed by the clearing node when it accepted the voucher">
@@ -82,38 +83,86 @@ export default function ProofPage() {
   );
 }
 
+const CHECK_ICON: Record<CheckState, { icon: typeof Check; className: string; label: string }> = {
+  pass: { icon: Check, className: "bg-positive text-white dark:text-background", label: "Passed" },
+  fail: { icon: X, className: "bg-negative text-white dark:text-background", label: "Failed" },
+  pending: { icon: CircleDashed, className: "bg-muted text-muted-foreground", label: "Pending" },
+  unknown: { icon: HelpCircle, className: "bg-muted text-muted-foreground", label: "Not evaluated" },
+};
+
+/** The verdict first, then each check that earns it, ticked one by one. */
 function Verdict({ p }: { p: ReceiptProof }) {
-  if (!p.batchId) {
-    return (
-      <div className="flex items-start gap-3 rounded-xl border bg-card px-5 py-4">
-        <CircleDashed className="mt-0.5 size-5 shrink-0 text-warning" />
-        <div>
-          <p className="font-medium">Accepted, not settled yet</p>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            The node accepted and signed this call. It becomes provable on chain once its batch settles.
-          </p>
-          <Button asChild variant="outline" size="sm" className="mt-3">
+  const pathMatches = useMemo(() => {
+    if (!p.receiptsRoot || p.proof.length === 0) return null;
+    return replayProof(p.leaf as Hex, p.proof as Hex[]).root.toLowerCase() === p.receiptsRoot.toLowerCase();
+  }, [p.leaf, p.proof, p.receiptsRoot]);
+  const checks = proofChecks(p, pathMatches);
+  const verified = isVerified(checks);
+  const failed = checks.some((c) => c.state === "fail");
+  const settled = Boolean(p.batchId);
+
+  const tone = verified ? "positive" : failed ? "negative" : "neutral";
+  const Seal = verified ? CheckCircle2 : failed ? XCircle : CircleDashed;
+  const title = verified ? "Verified on chain" : failed ? "Proof does not verify" : settled ? "Settled, on-chain check unavailable" : "Accepted, not settled yet";
+  const body = verified
+    ? "This exact call is part of a settled batch, and the ClearingHub contract confirms it. Anyone can repeat this check."
+    : failed
+      ? "At least one check below failed. Do not treat this call as settled."
+      : settled
+        ? "The batch settled, but the node did not ask the hub to verify this receipt."
+        : "The node accepted and signed this call. It becomes provable on chain once its batch settles.";
+
+  return (
+    <section
+      aria-label="Verification result"
+      className={cn(
+        "overflow-hidden rounded-xl border",
+        tone === "positive" ? "border-positive/30 bg-positive-soft" : tone === "negative" ? "border-negative/30 bg-negative-soft" : "bg-card",
+      )}
+    >
+      <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:p-6">
+        <span
+          className={cn(
+            "flex size-14 shrink-0 items-center justify-center rounded-full animate-in zoom-in-50 fade-in-0 duration-500",
+            tone === "positive" ? "bg-positive text-white dark:text-background" : tone === "negative" ? "bg-negative text-white dark:text-background" : "bg-muted text-muted-foreground",
+          )}
+          aria-hidden
+        >
+          <Seal className="size-7" strokeWidth={2.2} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className={cn("text-xl font-semibold tracking-[-0.015em]", tone === "positive" ? "text-positive" : tone === "negative" ? "text-negative" : "")} role="status">
+            {title}
+          </h2>
+          <p className="mt-1 max-w-[70ch] text-sm text-muted-foreground">{body}</p>
+        </div>
+        {!settled && (
+          <Button asChild variant="outline" size="sm" className="self-start sm:self-center">
             <Link href="/netting">Open netting</Link>
           </Button>
-        </div>
+        )}
       </div>
-    );
-  }
-  const ok = p.onchainVerified === true;
-  const unknown = p.onchainVerified == null;
-  return (
-    <div className={cn("flex items-start gap-3 rounded-xl border px-5 py-4", ok ? "border-transparent bg-positive-soft" : unknown ? "bg-card" : "border-transparent bg-negative-soft")}>
-      {ok ? <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-positive" /> : unknown ? <CircleDashed className="mt-0.5 size-5 shrink-0 text-muted-foreground" /> : <XCircle className="mt-0.5 size-5 shrink-0 text-negative" />}
-      <div className="min-w-0">
-        <p className={cn("font-medium", ok ? "text-positive" : unknown ? "" : "text-negative")}>
-          {ok ? "Verified on chain" : unknown ? "On-chain check unavailable" : "Proof does not verify on chain"}
-        </p>
-        <p className="mt-0.5 text-sm text-muted-foreground">
-          <span className="hash text-foreground">ClearingHub.verifyReceipt(batchId, leaf, proof)</span>{" "}
-          {ok ? "returned true. This exact call is part of the settled batch." : unknown ? "was not evaluated by the node." : "returned false."}
-        </p>
-      </div>
-    </div>
+      <ol className="grid border-t border-current/10 bg-card/70 sm:grid-cols-2 xl:grid-cols-4" aria-label="Checks">
+        {checks.map((c, i) => {
+          const I = CHECK_ICON[c.state];
+          return (
+            <li
+              key={c.key}
+              className={cn("flex gap-3 px-5 py-4 animate-in fade-in-0 fill-mode-both", i > 0 && "max-sm:border-t sm:max-xl:[&:nth-child(n+3)]:border-t xl:border-l", i % 2 === 1 && "sm:border-l")}
+              style={{ animationDelay: `${200 + i * 150}ms` }}
+            >
+              <span className={cn("mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full", I.className)}>
+                <I.icon className="size-3" strokeWidth={3} aria-label={I.label} />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{c.key === "onchain" ? <span className="hash text-[0.8125rem]">ClearingHub.verifyReceipt</span> : c.label}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{c.key === "onchain" && c.state === "pass" ? "Returned true. " : ""}{c.detail}</p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 }
 

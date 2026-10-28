@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Check, Copy, ExternalLink } from "lucide-react";
+import { Check, ChevronLeft, Copy, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatMoney, shortAddress, shortHash } from "@/lib/format";
 import { useDirectory, useExplorer, useToken } from "@/lib/queries";
@@ -175,7 +175,8 @@ export function PageHeader({
     <header className="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
         {back && (
-          <Link href={back.href} className="mb-2 inline-flex text-sm text-muted-foreground hover:text-foreground">
+          <Link href={back.href} className="-ml-1 mb-2 inline-flex items-center gap-0.5 rounded text-sm text-muted-foreground hover:text-foreground">
+            <ChevronLeft className="size-4" aria-hidden />
             {back.label}
           </Link>
         )}
