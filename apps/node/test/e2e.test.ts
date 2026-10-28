@@ -10,9 +10,9 @@ import type { AddressInfo } from "node:net";
 import { Hono } from "hono";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { erc20Abi, maxUint256, type Address, type Hex } from "viem";
+import { erc20Abi, keccak256, maxUint256, toBytes, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { clearingHubAbi, verifyReceiptProof, type ClearingReceipt } from "@payminto/protocol";
+import { clearingHubAbi, verifyReceiptProof, voucherTypedData, type ClearingReceipt } from "@payminto/protocol";
 import { AgentClient, MemoryReceiptStore, OwnerClient, paywall, type DeniedEvent } from "@payminto/sdk";
 import { startNode, type ClearingNode } from "../src/server.ts";
 import { silentLogger } from "../src/logger.ts";
@@ -229,6 +229,26 @@ describe("clearing end to end", () => {
     expect(((await nodeNa.json()) as { error: { code: string } }).error.code).toBe("PAYEE_NOT_ALLOWED");
     const nodeDenials = await api<Array<{ rule: string }>>("GET", "/v1/denials?limit=2");
     expect(nodeDenials.json.map((d) => d.rule).sort()).toEqual(["PAYEE_NOT_ALLOWED", "PER_CALL_CAP"]);
+    // Regression: no client involved at all. A validly signed voucher above the per-call cap, posted straight to the
+    // node by the provider, is denied with PER_CALL_CAP and recorded.
+    const posPremium = BigInt((await api<{ cumulative: string }>("GET", `/v1/mandates/${a.mandateId}/position?payee=${PAYEE_1}`, undefined, false)).json.cumulative);
+    const rawCumulative = posPremium + PRICE_PREMIUM;
+    const rawSig = await AGENT_A.signTypedData(voucherTypedData(31337, hub, { mandateId: a.mandateId, payee: PAYEE_1, cumulative: rawCumulative }));
+    const raw = await fetch(`${node.url}/v1/vouchers`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${premium.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 2,
+        scheme: "payminto-voucher",
+        network: "eip155:31337",
+        payload: { mandateId: a.mandateId, payee: PAYEE_1, amount: PRICE_PREMIUM.toString(), cumulative: rawCumulative.toString(), signature: rawSig, requestHash: keccak256(toBytes("raw")) },
+        providerId: premium.id,
+        requestHash: keccak256(toBytes("raw")),
+      }),
+    });
+    expect(raw.status).toBe(402);
+    expect(((await raw.json()) as { error: { code: string } }).error.code).toBe("PER_CALL_CAP");
+    expect((await api<Array<{ rule: string }>>("GET", "/v1/denials?limit=1")).json[0]!.rule).toBe("PER_CALL_CAP");
     // The public policy route serves exactly what the mandate commits to.
     const served = await api<{ policy: unknown; payees: string[] }>("GET", `/v1/mandates/${a.mandateId}/policy`, undefined, false);
     expect(served.json.policy).toEqual(policyA);
@@ -335,7 +355,7 @@ describe("clearing end to end", () => {
     const ov = await api("GET", "/v1/overview");
     expect(ov.json.calls.all).toBe(acceptedCalls);
     expect(ov.json.calls.settled).toBe(acceptedCalls);
-    expect(ov.json.denialsTotal).toBe(3);
+    expect(ov.json.denialsTotal).toBe(4); // STALE_CUMULATIVE, PER_CALL_CAP and PAYEE_NOT_ALLOWED from the unguarded client, the raw over-cap voucher
     expect(ov.json.compressionRatio).toBe(acceptedCalls / batch.json.transfers);
     expect(ov.json.lastBatch.id).toBe(batchId);
     expect(ov.json.activeMandates).toBe(2);

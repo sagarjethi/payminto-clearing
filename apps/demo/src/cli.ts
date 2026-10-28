@@ -51,7 +51,12 @@ function narrateAttack(a: AttackResult) {
   out(`\n  ${c.red("!")} ${a.agent} ${c.dim(`(${a.via})`)}: ${a.name}`);
   if (a.toolText) out(`    ${c.dim(`MCP tool error: ${a.toolText.slice(0, 150)}`)}`);
   out(`    layer 1, agent SDK before signing:   ${a.agentRule ? c.red(c.bold(`REFUSED ${a.agentRule}`)) : c.red(c.bold("SIGNED"))}`);
-  out(`    layer 2, clearing node (recorded):  ${a.nodeRule ? c.red(c.bold(`DENIED  ${a.nodeRule}`)) : c.red(c.bold("ACCEPTED - this should never happen"))}  ${a.ruleText ?? ""}`);
+  const l2 = a.nodeRule
+    ? c.red(c.bold(`DENIED  ${a.nodeRule}`))
+    : a.compromisedLocalRule
+      ? c.yellow(c.bold(`NOT REACHED - the compromised client refused locally with ${a.compromisedLocalRule}`))
+      : c.red(c.bold(`ACCEPTED - this should never happen (${a.message})`));
+  out(`    layer 2, clearing node (recorded):  ${l2}  ${a.ruleText ?? ""}`);
 }
 
 function trafficProgress() {

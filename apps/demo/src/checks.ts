@@ -13,7 +13,8 @@ export function checkSummary(s: Summary, o: { expectedCalls: number }): string[]
   if (s.attacks.length !== 2) p.push(`${s.attacks.length} attacks ran, expected 2`);
   for (const a of s.attacks) {
     if (a.agentRule !== expect[a.name]) p.push(`${a.name}: agent refused with ${a.agentRule}, expected ${expect[a.name]}`);
-    if (a.nodeRule !== expect[a.name]) p.push(`${a.name}: node denied with ${a.nodeRule}, expected ${expect[a.name]}`);
+    if (a.compromisedLocalRule) p.push(`${a.name}: the compromised client refused locally with ${a.compromisedLocalRule}, so the node was never tested`);
+    else if (a.nodeRule !== expect[a.name]) p.push(`${a.name}: node denied with ${a.nodeRule}, expected ${expect[a.name]}`);
   }
   if (!s.trialBalance.balanced || s.trialBalance.balance !== "0") p.push("trial balance is not zero");
   if (s.hubBalance !== 0n) p.push("hub holds tokens");

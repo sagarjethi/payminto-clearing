@@ -96,7 +96,11 @@ export function renderSummary(s: Summary): string {
   for (const d of s.denials) out.push(`  ${c.red(d.rule.padEnd(18))} x${d.count}  ${d.ruleText}`);
   for (const a of s.attacks) {
     const l1 = a.agentRule ? c.red(`agent refused ${a.agentRule}`) : c.red("agent SIGNED");
-    const l2 = a.nodeRule ? c.red(`node denied ${a.nodeRule}`) : c.red("node ACCEPTED");
+    const l2 = a.nodeRule
+      ? c.red(`node denied ${a.nodeRule}`)
+      : a.compromisedLocalRule
+        ? c.yellow(`never reached the node (refused locally ${a.compromisedLocalRule})`)
+        : c.red("node ACCEPTED");
     out.push(`  ${c.dim("attack")} ${a.agent} via ${a.via.toUpperCase()}: ${a.name} -> ${l1}, compromised runtime -> ${l2}`);
     if (a.toolText) out.push(`         ${c.dim(`MCP tool error: "${a.toolText.slice(0, 150)}${a.toolText.length > 150 ? "..." : ""}"`)}`);
   }

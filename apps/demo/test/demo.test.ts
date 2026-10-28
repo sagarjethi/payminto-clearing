@@ -11,7 +11,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { portIsFree } from "../src/chain.ts";
 import { REPO_ROOT } from "../src/config.ts";
 import { checkSummary } from "../src/checks.ts";
-import { SqliteReceiptStore } from "@payminto/sdk";
+import { privateKeyToAccount } from "viem/accounts";
+import { AgentClient, SqliteReceiptStore } from "@payminto/sdk";
 import { loadDemoConfig } from "../src/config.ts";
 import { collectSummary, runTraffic, settle, type Summary } from "../src/scenario.ts";
 import { startStack, type Stack } from "../src/stack.ts";
@@ -82,9 +83,32 @@ describe("pnpm demo scenario (compressed)", () => {
     expect(summary.denials.map((d) => d.rule).sort()).toEqual(["PAYEE_NOT_ALLOWED", "PER_CALL_CAP"]);
     expect(summary.denials.find((d) => d.rule === "PAYEE_NOT_ALLOWED")?.ruleText).toBe("Payee is not on the mandate allowlist");
     const injection = summary.attacks.find((a) => a.via === "mcp")!;
-    expect(injection).toMatchObject({ agent: "Trading Agent", agentRule: "PAYEE_NOT_ALLOWED", nodeRule: "PAYEE_NOT_ALLOWED" });
+    expect(injection).toMatchObject({ agent: "Trading Agent", agentRule: "PAYEE_NOT_ALLOWED", nodeRule: "PAYEE_NOT_ALLOWED", compromisedLocalRule: null });
     expect(injection.toolText).toMatch(/^Payment denied by mandate rule PAYEE_NOT_ALLOWED/);
-    expect(summary.attacks.find((a) => a.via === "sdk")).toMatchObject({ agent: "Treasury Agent", agentRule: "PER_CALL_CAP", nodeRule: "PER_CALL_CAP" });
+    expect(summary.attacks.find((a) => a.via === "sdk")).toMatchObject({ agent: "Treasury Agent", agentRule: "PER_CALL_CAP", nodeRule: "PER_CALL_CAP", compromisedLocalRule: null });
+  });
+
+  // Regression for "FAIL no PER_CALL_CAP denial recorded" / "ACCEPTED - this should never happen": a second runtime of the
+  // Treasury key that does not share its receipt store refuses locally (POSITION_UNVERIFIED, the Writer payee already has
+  // a position), never reaches the node, and must be reported as such rather than as accepted.
+  it("reports a compromised runtime that refused locally as untested, never as accepted", async () => {
+    const isolated = new AgentClient({
+      chainId: stack.cfg.chainId,
+      hub: stack.hub,
+      nodeUrl: stack.nodeUrl,
+      account: privateKeyToAccount(stack.cfg.keys.treasury),
+      mandateId: stack.mandates.treasury,
+      enforcePolicy: false,
+    });
+    const res = await isolated.fetch(`${stack.services.writer}/v1/deep-dive`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(res.status).toBe(402);
+    expect(((await res.json()) as { error: { code: string; details: { enforcedBy: string } } }).error).toMatchObject({
+      code: "POSITION_UNVERIFIED",
+      details: { enforcedBy: "agent" },
+    });
+    const overCap = summary.attacks.find((a) => a.via === "sdk")!;
+    const problems = checkSummary({ ...summary, attacks: summary.attacks.map((a) => (a === overCap ? { ...a, nodeRule: null, compromisedLocalRule: "POSITION_UNVERIFIED" } : a)) }, { expectedCalls: 60 });
+    expect(problems).toEqual(["over the per-call cap: the compromised client refused locally with POSITION_UNVERIFIED, so the node was never tested"]);
   });
 
   it("wraps every net transfer as an accepted, co-signed HSP payment", () => {

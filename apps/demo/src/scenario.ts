@@ -18,6 +18,11 @@ export type AttackResult = {
   agentRule: string | null;
   /** Layer 2: the rule the clearing node denied the compromised agent's signed voucher with (recorded, on the dashboard). */
   nodeRule: string | null;
+  /**
+   * Set when the compromised client refused on its own and never sent a voucher (for example POSITION_UNVERIFIED when it
+   * does not share the agent's receipt store), so layer 2 was not exercised. Never to be reported as "accepted".
+   */
+  compromisedLocalRule: string | null;
   ruleText: string | null;
   message: string;
   /** The LLM-facing tool error text, for the MCP path. */
@@ -71,11 +76,14 @@ async function mcpCall(stack: Stack, args: Record<string, unknown>): Promise<Too
 
 const ruleOf = (r: string | null) => (r && r in DENIAL_RULES ? DENIAL_RULES[r as DenialRule] : null);
 
-async function nodeDenial(client: AgentClient, url: string, init?: RequestInit): Promise<{ rule: string | null; message: string }> {
+async function nodeDenial(client: AgentClient, url: string, init?: RequestInit): Promise<{ rule: string | null; local: string | null; message: string }> {
   const res = await client.fetch(url, init);
   const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string; details?: { enforcedBy?: string } } } | null;
-  if (res.status !== 402 || body?.error?.details?.enforcedBy === "agent") return { rule: null, message: `HTTP ${res.status}` };
-  return { rule: body?.error?.code ?? null, message: body?.error?.message ?? "" };
+  if (res.status === 402 && body?.error?.details?.enforcedBy === "agent") {
+    return { rule: null, local: body.error.code ?? "UNKNOWN", message: body.error.message ?? "" };
+  }
+  if (res.status !== 402) return { rule: null, local: null, message: `HTTP ${res.status}` };
+  return { rule: body?.error?.code ?? null, local: null, message: body?.error?.message ?? "" };
 }
 
 /**
@@ -101,6 +109,7 @@ export async function injectionAttack(stack: Stack): Promise<AttackResult> {
     target: `${url} (payee ${stack.addresses.rogue})`,
     agentRule,
     nodeRule: node.rule,
+    compromisedLocalRule: node.local,
     ruleText: ruleOf(node.rule ?? agentRule),
     message: node.message,
     toolText: text.split("\n")[0],
@@ -122,6 +131,7 @@ export async function overCapAttack(stack: Stack): Promise<AttackResult> {
     target: `Research Writer Deep Dive (${stack.cfg.prices.deep} atomic, cap ${stack.policies.treasury.perCallCap})`,
     agentRule,
     nodeRule: node.rule,
+    compromisedLocalRule: node.local,
     ruleText: ruleOf(node.rule ?? agentRule),
     message: node.message,
   };
