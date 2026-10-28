@@ -54,7 +54,11 @@ export class MandateService {
     this.#chain = deps.chain;
     this.#events = deps.events;
     this.#log = deps.log;
-    this.#lastScannedBlock = BigInt(this.#store.getMeta("revocations_scanned_block") ?? deps.fromBlock.toString());
+    // The scan starts at the hub's deployment block (DEPLOY_BLOCK or deployments/<chainId>.json): nothing before it can
+    // concern this hub, and a live chain is far too long to scan from genesis. A stored cursor behind it moves forward.
+    const floor = deps.fromBlock > 0n ? deps.fromBlock - 1n : 0n;
+    const stored = this.#store.getMeta("revocations_scanned_block");
+    this.#lastScannedBlock = stored !== undefined && BigInt(stored) > floor ? BigInt(stored) : floor;
   }
 
   async create(input: CreateMandateInput): Promise<MandateRow> {
@@ -226,11 +230,22 @@ export class MandateService {
     };
   }
 
-  /** Picks up revocations made directly on chain by owners or agents. */
-  async scanRevocations(): Promise<void> {
+  /** First block the next revocation scan will read. */
+  get nextScanBlock(): bigint {
+    return this.#lastScannedBlock + 1n;
+  }
+
+  /**
+   * Picks up revocations made directly on chain by owners or agents. Reads at most `maxWindows` windows of 5,001 blocks
+   * (the HashKey Chain eth_getLogs limit) per call, so a node far behind catches up over a few ticks.
+   */
+  async scanRevocations(maxWindows = 20): Promise<void> {
+    const head = await this.#chain.public.getBlockNumber();
+    for (let i = 0; i < maxWindows && head > this.#lastScannedBlock; i++) await this.#scanWindow(head);
+  }
+
+  async #scanWindow(head: bigint): Promise<void> {
     const chain = this.#chain;
-    const head = await chain.public.getBlockNumber();
-    if (head <= this.#lastScannedBlock) return;
     const from = this.#lastScannedBlock + 1n;
     const to = head - from > 5_000n ? from + 5_000n : head;
     const logs = await chain.public.getLogs({

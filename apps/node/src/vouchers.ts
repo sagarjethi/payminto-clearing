@@ -54,6 +54,7 @@ export class VoucherService {
   readonly #funds: FundsTracker;
   readonly #log: Logger;
   readonly #clock: () => number;
+  readonly #denialDedupSec: number;
   readonly #contractAgents = new Map<string, boolean>();
 
   constructor(deps: {
@@ -65,6 +66,8 @@ export class VoucherService {
     funds: FundsTracker;
     log: Logger;
     clock?: () => number;
+    /** Identical denials within this many seconds fold into one row (0 disables). */
+    denialDedupSec?: number;
   }) {
     this.#db = deps.db;
     this.#store = deps.store;
@@ -74,6 +77,7 @@ export class VoucherService {
     this.#funds = deps.funds;
     this.#log = deps.log;
     this.#clock = deps.clock ?? (() => Math.floor(Date.now() / 1000));
+    this.#denialDedupSec = deps.denialDedupSec ?? 60;
   }
 
   positionJson(mandateId: Hex, payee: Address): PositionJson {
@@ -183,6 +187,27 @@ export class VoucherService {
           }
         }
         const details: Record<string, unknown> = { ...decision.details, position: positionAfter(position.cumulative) };
+        // A replayed voucher (same request, same cumulative, same verdict) bumps the existing row instead of adding one,
+        // so a flood of retries cannot grow the denials and events tables without bound.
+        if (this.#denialDedupSec > 0) {
+          const dup = db.get<{ seq: number }>(
+            `SELECT seq FROM denials
+             WHERE mandate_id = ? AND request_hash = ? AND cumulative = ? AND payee = ? AND provider_id = ? AND rule = ?
+               AND COALESCE(last_seen, timestamp) > ?
+             ORDER BY seq DESC LIMIT 1`,
+            v.mandateId,
+            v.requestHash,
+            v.cumulative.toString(),
+            v.payee,
+            provider.id,
+            decision.rule,
+            now - this.#denialDedupSec,
+          );
+          if (dup) {
+            db.run("UPDATE denials SET repeats = repeats + 1, last_seen = ? WHERE seq = ?", now, dup.seq);
+            return { ok: false, rule: decision.rule, message: decision.message, details, position: positionAfter(position.cumulative) };
+          }
+        }
         const row: DenialRow = {
           seq: 0,
           id: `dny_${randomBytes(8).toString("hex")}`,
@@ -198,6 +223,8 @@ export class VoucherService {
           details: JSON.stringify(details),
           timestamp: now,
           at: nowIso(),
+          repeats: 1,
+          last_seen: null,
         };
         const { lastInsertRowid } = db.run(
           `INSERT INTO denials (id, rule, message, mandate_id, agent, payee, provider_id, amount, cumulative, request_hash, details, timestamp, at)

@@ -3,14 +3,16 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@9.15.9",
-  "engines": { "node": ">=22.13" },
+  "engines": { "node": ">=22.18" },
   "scripts": {
     "build": "pnpm -r --filter ./packages/** build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "contracts:test": "cd contracts && forge test",
-    "demo": "pnpm --filter @payminto/demo demo",
-    "demo:stage": "pnpm --filter @payminto/demo demo:stage",
-    "mcp": "pnpm --filter @payminto/mcp start"
+    "demo": "node apps/node/scripts/check-runtime.mjs && pnpm --filter @payminto/demo demo",
+    "demo:stage": "node apps/node/scripts/check-runtime.mjs && pnpm --filter @payminto/demo demo:stage",
+    "mcp": "node apps/node/scripts/check-runtime.mjs && pnpm --filter @payminto/mcp start",
+    "node": "pnpm --filter @payminto/node start",
+    "backup": "pnpm --filter @payminto/node backup"
   }
 }

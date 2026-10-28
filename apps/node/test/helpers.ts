@@ -20,7 +20,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { clearingHubAbi, clearingHubBytecode, localAnvil, mockStablecoinAbi, mockStablecoinBytecode } from "@payminto/protocol";
-import type { Config } from "../src/config.ts";
+import { DEFAULT_RATE_LIMIT, type Config } from "../src/config.ts";
 
 /** Anvil default dev keys: public, local only. */
 export const ANVIL_KEYS = [
@@ -125,6 +125,11 @@ export function testConfig(over: Partial<Config> & Pick<Config, "rpcUrl" | "hub"
     logLevel: "error",
     fundsRefreshSec: 30,
     deployBlock: 0n,
+    rpcFallbackUrls: [],
+    rateLimit: DEFAULT_RATE_LIMIT,
+    trustProxyHops: 0,
+    denials: { dedupWindowSec: 60, maxRows: 100_000 },
+    eventsMaxRows: 200_000,
     ...over,
   };
 }

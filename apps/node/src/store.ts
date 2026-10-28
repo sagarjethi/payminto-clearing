@@ -76,6 +76,9 @@ export type DenialRow = {
   details: string;
   timestamp: number;
   at: string;
+  /** How many identical denials this row stands for (migration 002). */
+  repeats: number;
+  last_seen: number | null;
 };
 
 export type BatchStatus = "building" | "cosigning" | "submitted" | "confirmed" | "failed";
@@ -209,6 +212,8 @@ export function denialJson(r: DenialRow) {
     details: JSON.parse(r.details) as Record<string, unknown>,
     timestamp: r.timestamp,
     createdAt: r.at,
+    repeats: r.repeats,
+    lastSeen: r.last_seen ?? r.timestamp,
   };
 }
 export type DenialJson = ReturnType<typeof denialJson>;

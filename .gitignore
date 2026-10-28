@@ -4,6 +4,7 @@ dist/
 *.db
 *.db-*
 data/
+backups/
 .env
 .env.local
 *.local.json

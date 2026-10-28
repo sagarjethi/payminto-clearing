@@ -2,13 +2,15 @@
   "name": "@payminto/node",
   "version": "0.1.0",
   "private": true,
+  "engines": { "node": ">=22.18" },
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
-    "dev": "node --env-file-if-exists=.env src/main.ts",
-    "start": "node src/main.ts",
+    "dev": "node scripts/check-runtime.mjs && node --env-file-if-exists=.env src/main.ts",
+    "start": "node scripts/check-runtime.mjs && node --env-file-if-exists=.env src/main.ts",
+    "backup": "node scripts/check-runtime.mjs && node --env-file-if-exists=.env scripts/backup.ts",
     "db:reset": "node scripts/reset-db.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p .",

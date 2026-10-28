@@ -22,6 +22,8 @@ import type { EventBus, NodeEvent } from "./events.ts";
 import type { Ledger } from "./ledger.ts";
 import type { Logger } from "./logger.ts";
 import type { MandateService } from "./mandates.ts";
+import { databaseGauges, renderGauges, type Metrics } from "./metrics.ts";
+import { clientIp, TokenBuckets, type TakeResult } from "./ratelimit.ts";
 import { overview } from "./overview.ts";
 import { receiptVerifiedOnchain } from "./proofs.ts";
 import type { SettlementService } from "./settlement.ts";
@@ -44,6 +46,8 @@ export type NodeServices = {
   token: { address: Address; symbol: string; decimals: number };
   /** Called on shutdown to end open SSE streams. */
   sseClosers: Set<() => void>;
+  metrics: Metrics;
+  limiters: { provider: TokenBuckets; ip: TokenBuckets };
 };
 
 // ---------------------------------------------------------------------------
@@ -199,6 +203,10 @@ export function createApi(s: NodeServices): Hono<Vars> {
   app.use("*", async (c, next) => {
     const started = performance.now();
     await next();
+    s.metrics.inc("payminto_http_requests_total", "HTTP requests by method and status class.", {
+      method: c.req.method,
+      status: `${Math.floor(c.res.status / 100)}xx`,
+    });
     // Path only: the query string may carry the SSE admin token.
     log.debug("http", { method: c.req.method, path: c.req.path, status: c.res.status, ms: Math.round(performance.now() - started) });
   });
@@ -210,6 +218,27 @@ export function createApi(s: NodeServices): Hono<Vars> {
   });
   app.notFound((c) => c.json({ error: { code: "NOT_FOUND", message: `no route for ${c.req.method} ${c.req.path}` } }, 404));
 
+  const isAdmin = (c: Context) => {
+    const t = bearer(c);
+    return !!t && safeEqual(t, config.adminToken);
+  };
+  const tooMany = (c: Context, scope: "provider" | "ip", r: Extract<TakeResult, { ok: false }>) => {
+    s.metrics.inc("payminto_rate_limited_total", "Requests refused with 429, by limiter.", { scope });
+    c.header("Retry-After", String(r.retryAfterSec));
+    return c.json({ error: { code: "RATE_LIMITED", message: `too many requests, retry in ${r.retryAfterSec}s`, details: { scope } } }, 429);
+  };
+
+  // Per-IP token bucket for every request that is not admin-authenticated: public reads, cosign, signed revokes and
+  // failed auth attempts. Provider voucher traffic is limited per provider key below instead. /healthz stays open
+  // for container and load-balancer probes.
+  app.use("*", async (c, next) => {
+    if (c.req.method === "OPTIONS" || c.req.path === "/healthz" || (c.req.method === "POST" && c.req.path === "/v1/vouchers")) return next();
+    if (isAdmin(c)) return next();
+    const r = s.limiters.ip.take(clientIp(c, config.trustProxyHops));
+    if (!r.ok) return tooMany(c, "ip", r);
+    return next();
+  });
+
   const admin: MiddlewareHandler<Vars> = async (c, next) => {
     const t = bearer(c);
     if (!t || !safeEqual(t, config.adminToken)) throw new ApiError(401, "UNAUTHORIZED", "admin bearer token required");
@@ -218,7 +247,14 @@ export function createApi(s: NodeServices): Hono<Vars> {
   const provider: MiddlewareHandler<Vars> = async (c, next) => {
     const t = bearer(c);
     const p = t ? store.providerByKeyHash(hashApiKey(t)) : undefined;
-    if (!p) throw new ApiError(401, "UNAUTHORIZED", "provider API key required");
+    if (!p) {
+      // Unknown keys share the caller's IP bucket, so guessing keys cannot bypass the per-key limit.
+      const r = s.limiters.ip.take(clientIp(c, config.trustProxyHops));
+      if (!r.ok) return tooMany(c, "ip", r);
+      throw new ApiError(401, "UNAUTHORIZED", "provider API key required");
+    }
+    const r = s.limiters.provider.take(p.id);
+    if (!r.ok) return tooMany(c, "provider", r);
     c.set("provider", p);
     await next();
   };
@@ -237,6 +273,45 @@ export function createApi(s: NodeServices): Hono<Vars> {
       { ok, chainId: config.chainId, hub: chain.hub, token: chain.token, operator: chain.operator.address, blockNumber, hspMode: config.hsp.mode },
       ok ? 200 : 503,
     );
+  });
+
+  // Prometheus scrape target. Admin-authenticated: configure `authorization: { credentials: <ADMIN_TOKEN> }` in the
+  // scrape job, or scrape through a proxy that adds the header (docs/OPERATIONS.md).
+  app.get("/metrics", admin, async (c) => {
+    const [head, gas] = await Promise.all([
+      chain.public.getBlockNumber().catch(() => null),
+      chain.public.getBalance({ address: chain.operator.address }).catch(() => null),
+    ]);
+    const scanned = store.getMeta("revocations_scanned_block");
+    const mem = process.memoryUsage();
+    const lines = [
+      ...renderGauges([
+        {
+          name: "payminto_node_info",
+          help: "Static node information.",
+          samples: [{ labels: { version: NODE_VERSION, chain_id: String(config.chainId), hsp_mode: config.hsp.mode }, value: 1 }],
+        },
+        { name: "payminto_chain_head_block", help: "Latest block seen from RPC_URL.", samples: head === null ? [] : [{ value: head }] },
+        { name: "payminto_rpc_up", help: "1 when the RPC answered this scrape.", samples: [{ value: head === null ? 0 : 1 }] },
+        {
+          name: "payminto_revocations_scanned_block",
+          help: "Last block scanned for on-chain MandateRevoked events.",
+          samples: scanned === undefined ? [] : [{ value: BigInt(scanned) }],
+        },
+        { name: "payminto_operator_gas_balance_wei", help: "Native balance of the operator, which pays settlement gas.", samples: gas === null ? [] : [{ value: gas }] },
+        { name: "payminto_unsettled_calls", help: "Accepted calls not yet in a batch.", samples: [{ value: store.unsettledCallCount() }] },
+        { name: "payminto_sse_clients", help: "Open /v1/events streams.", samples: [{ value: s.sseClosers.size }] },
+        { name: "payminto_ratelimit_keys", help: "Tracked rate-limit buckets.", samples: [
+          { labels: { scope: "provider" }, value: s.limiters.provider.size },
+          { labels: { scope: "ip" }, value: s.limiters.ip.size },
+        ] },
+        ...databaseGauges(s.db),
+        { name: "process_resident_memory_bytes", help: "Resident set size.", samples: [{ value: mem.rss }] },
+        { name: "process_uptime_seconds", help: "Seconds since the node started.", samples: [{ value: Math.round((Date.now() - s.metrics.startedAt) / 1000) }] },
+      ]),
+      ...s.metrics.renderCounters(),
+    ];
+    return c.text(lines.join("\n") + "\n", 200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
   });
 
   app.get("/v1/info", async (c) => {
@@ -472,7 +547,7 @@ export function createApi(s: NodeServices): Hono<Vars> {
        FROM calls WHERE provider_id = ?`,
       p.id,
     )!;
-    const denials = s.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM denials WHERE provider_id = ?", p.id)!.n;
+    const denials = s.db.get<{ n: number }>("SELECT COALESCE(SUM(repeats), 0) AS n FROM denials WHERE provider_id = ?", p.id)!.n;
     return c.json({
       ...providerPublicJson(p, store.providerCalls24h(p.id, nowSec())),
       createdAt: p.created_at,

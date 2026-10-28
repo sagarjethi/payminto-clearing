@@ -25,7 +25,7 @@ export function overview(db: Database, store: Store, chainId: number, nowSec: nu
     day,
   )!;
   const denials = db.get<{ total: number; last24h: number }>(
-    "SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN timestamp > ? THEN 1 ELSE 0 END), 0) AS last24h FROM denials",
+    "SELECT COALESCE(SUM(repeats), 0) AS total, COALESCE(SUM(CASE WHEN COALESCE(last_seen, timestamp) > ? THEN repeats ELSE 0 END), 0) AS last24h FROM denials",
     day,
   )!;
   const mandates = db.get<{ total: number; active: number }>(

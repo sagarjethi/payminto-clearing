@@ -13,6 +13,9 @@ import type { HspPort } from "./hsp/port.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, type Logger } from "./logger.ts";
 import { MandateService } from "./mandates.ts";
+import { Metrics } from "./metrics.ts";
+import { TokenBuckets } from "./ratelimit.ts";
+import { pruneTable } from "./retention.ts";
 import { SettlementService } from "./settlement.ts";
 import { Store } from "./store.ts";
 import { VoucherService } from "./vouchers.ts";
@@ -42,6 +45,7 @@ export async function startNode(config: Config, opts: CreateNodeOptions = {}): P
   const chain = new ChainClient({
     chainId: config.chainId,
     rpcUrl: config.rpcUrl,
+    rpcFallbackUrls: config.rpcFallbackUrls,
     hub: config.hub,
     token: config.token,
     operatorKey: config.operatorKey,
@@ -89,7 +93,16 @@ export async function startNode(config: Config, opts: CreateNodeOptions = {}): P
             publicClient: chain.public,
             adapterAccount: chain.operator,
           }));
-    const vouchers = new VoucherService({ db, store, chain, ledger, events, funds, log: log.child({ component: "vouchers" }) });
+    const vouchers = new VoucherService({
+      db,
+      store,
+      chain,
+      ledger,
+      events,
+      funds,
+      log: log.child({ component: "vouchers" }),
+      denialDedupSec: config.denials.dedupWindowSec,
+    });
     const mandates = new MandateService({ db, store, chain, events, log: log.child({ component: "mandates" }), fromBlock: config.deployBlock });
     const settlement = new SettlementService({
       db,
@@ -103,10 +116,37 @@ export async function startNode(config: Config, opts: CreateNodeOptions = {}): P
       cosignTimeoutSec: config.hsp.cosignTimeoutSec,
     });
     const token = { address: chain.token, ...(await chain.tokenMeta()) };
-    const services: NodeServices = { config, db, store, chain, ledger, events, vouchers, mandates, settlement, log, token, sseClosers: new Set() };
+    const limiters = {
+      provider: new TokenBuckets(config.rateLimit.provider),
+      ip: new TokenBuckets(config.rateLimit.ip),
+    };
+    const services: NodeServices = {
+      config,
+      db,
+      store,
+      chain,
+      ledger,
+      events,
+      vouchers,
+      mandates,
+      settlement,
+      log,
+      token,
+      sseClosers: new Set(),
+      metrics: new Metrics(),
+      limiters,
+    };
     const app = createApi(services);
 
     await settlement.recover();
+    const prune = () => {
+      const denials = pruneTable(db, "denials", config.denials.maxRows);
+      const evts = pruneTable(db, "events", config.eventsMaxRows);
+      limiters.provider.prune();
+      limiters.ip.prune();
+      if (denials || evts) log.info("pruned old rows", { denials, events: evts });
+    };
+    prune();
 
     const timers: NodeJS.Timeout[] = [];
     const every = (ms: number, name: string, fn: () => Promise<unknown>) => {
@@ -127,6 +167,7 @@ export async function startNode(config: Config, opts: CreateNodeOptions = {}): P
       every(config.fundsRefreshSec * 1000, "funds refresh", () => funds.sweep());
       every(15_000, "revocation scan", () => mandates.scanRevocations());
       every(15_000, "hsp retry", () => settlement.retryHsp());
+      every(60_000, "retention", async () => prune());
       if (config.settleIntervalSec > 0) {
         every(config.settleIntervalSec * 1000, "auto-settle", async () => {
           if (store.unsettledCallCount() >= config.settleMinCalls) await settlement.settle("interval");

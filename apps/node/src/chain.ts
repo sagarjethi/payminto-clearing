@@ -3,6 +3,7 @@ import {
   createWalletClient,
   defineChain,
   erc20Abi,
+  fallback,
   getAddress,
   http,
   type Address,
@@ -49,14 +50,17 @@ export class ChainClient {
   readonly wallet: WalletClient<Transport, Chain, Account>;
   readonly txQueue = new SerialQueue();
 
-  constructor(opts: { chainId: number; rpcUrl: string; hub: Address; token: Address; operatorKey: Hex }) {
+  constructor(opts: { chainId: number; rpcUrl: string; rpcFallbackUrls?: readonly string[]; hub: Address; token: Address; operatorKey: Hex }) {
     const net = networkFor(opts.chainId);
     this.chainId = opts.chainId;
     this.chain = defineChain({ ...net.chain, rpcUrls: { default: { http: [opts.rpcUrl] } } });
     this.hub = getAddress(opts.hub);
     this.token = getAddress(opts.token);
     this.operator = privateKeyToAccount(opts.operatorKey, { nonceManager });
-    const transport = http(opts.rpcUrl, { retryCount: 3, timeout: 20_000 });
+    const urls = [opts.rpcUrl, ...(opts.rpcFallbackUrls ?? []).filter((u) => u !== opts.rpcUrl)];
+    const transports = urls.map((u) => http(u, { retryCount: urls.length > 1 ? 1 : 3, timeout: 20_000 }));
+    // Fallback keeps RPC_URL first and moves to the next endpoint only when a request fails.
+    const transport: Transport = transports.length > 1 ? fallback(transports) : transports[0]!;
     this.public = createPublicClient({ chain: this.chain, transport, pollingInterval: 250 });
     this.wallet = createWalletClient({ chain: this.chain, transport, account: this.operator });
   }

@@ -16,7 +16,7 @@ const PROVIDER = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
 describe("database", () => {
   it("migrates once, in WAL mode with foreign keys on", () => {
     const db = new Database(join(tmp.dir, "a.test.db"));
-    expect(db.migrate()).toBe(1);
+    expect(db.migrate()).toBe(2);
     expect(db.migrate()).toBe(0);
     expect(db.get<{ journal_mode: string }>("PRAGMA journal_mode")!.journal_mode).toBe("wal");
     expect(db.get<{ foreign_keys: number }>("PRAGMA foreign_keys")!.foreign_keys).toBe(1);
