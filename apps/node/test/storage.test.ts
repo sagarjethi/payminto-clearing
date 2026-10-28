@@ -111,11 +111,12 @@ describe("data-safety guard", () => {
     expect(isDisposableTarget("/srv/payminto/clearing.test.db").ok).toBe(true);
     expect(isDisposableTarget("/srv/payminto/clearing.demo.db").ok).toBe(true);
     expect(isDisposableTarget(":memory:").ok).toBe(true);
-    expect(isDisposableTarget("./data/clearing.db").ok).toBe(false);
+    // Absolute on purpose: a relative path is disposable when the checkout itself lives in the temp dir (CI, scratch clones).
+    expect(isDisposableTarget("/var/lib/payminto/data/clearing.db").ok).toBe(false);
     expect(isDisposableTarget("/srv/payminto/clearing.db").ok).toBe(false);
     expect(isDisposableTarget("/srv/payminto/test.db.backup").ok).toBe(false);
     expect(isDisposableTarget("/srv/payminto/clearing.db", [DISPOSABLE_FLAG]).ok).toBe(true);
-    expect(() => assertDisposableTarget("./data/clearing.db")).toThrow(/Refusing/);
+    expect(() => assertDisposableTarget("/var/lib/payminto/data/clearing.db")).toThrow(/Refusing/);
   });
 });
 
