@@ -7,6 +7,7 @@
   "scripts": {
     "build": "pnpm -r --filter ./packages/** build",
     "test": "pnpm -r test",
+    "test:fork": "pnpm --filter @payminto/node test:fork",
     "typecheck": "pnpm -r typecheck",
     "contracts:test": "cd contracts && forge test",
     "demo": "node apps/node/scripts/check-runtime.mjs && pnpm --filter @payminto/demo demo",

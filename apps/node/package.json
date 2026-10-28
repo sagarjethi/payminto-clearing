@@ -14,7 +14,8 @@
     "db:reset": "node scripts/reset-db.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p .",
-    "gas": "node scripts/measure-gas.ts"
+    "gas": "node scripts/measure-gas.ts",
+    "test:fork": "FORK=1 vitest run -c vitest.fork.config.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.5",

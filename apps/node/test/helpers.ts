@@ -57,12 +57,15 @@ export type Anvil = {
   stop(): void;
 };
 
-/** Boots a fresh anvil on a random free port. */
-export async function startAnvil(): Promise<Anvil> {
+/**
+ * Boots a fresh anvil on a random free port. `args` adds flags (the fork suite passes --fork-url), `chain` is the
+ * chain definition the clients use (a HashKey Chain definition for forks).
+ */
+export async function startAnvil(opts: { args?: string[]; chain?: Chain; startupMs?: number } = {}): Promise<Anvil> {
   const port = await freePort();
-  const proc: ChildProcess = spawn("anvil", ["--port", String(port), "--silent"], { stdio: "ignore" });
+  const proc: ChildProcess = spawn("anvil", ["--port", String(port), "--silent", ...(opts.args ?? [])], { stdio: "ignore" });
   const rpcUrl = `http://127.0.0.1:${port}`;
-  const chain = defineChain({ ...localAnvil, rpcUrls: { default: { http: [rpcUrl] } } });
+  const chain = defineChain({ ...(opts.chain ?? localAnvil), rpcUrls: { default: { http: [rpcUrl] } } });
   const transport = http(rpcUrl);
   const pub = createPublicClient({ chain, transport, pollingInterval: 100 });
   for (let i = 0; ; i++) {
@@ -70,7 +73,10 @@ export async function startAnvil(): Promise<Anvil> {
       await pub.getChainId();
       break;
     } catch {
-      if (i > 150) throw new Error("anvil did not start");
+      if (i > (opts.startupMs ?? 15_000) / 100) {
+        proc.kill();
+        throw new Error("anvil did not start");
+      }
       await new Promise((r) => setTimeout(r, 100));
     }
   }

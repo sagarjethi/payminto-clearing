@@ -79,3 +79,33 @@ describe("fee bump", () => {
     expect(bumpFees({ maxFeePerGas: 9n, maxPriorityFeePerGas: 7n })).toEqual({ maxFeePerGas: 11n, maxPriorityFeePerGas: 8n });
   });
 });
+
+describe("L1 data fee", () => {
+  it("reads l1Fee from a HashKey Chain receipt through viem's OP Stack formatters, and null elsewhere", async () => {
+    const { hashkeyMainnet } = await import("@payminto/protocol");
+    const { ChainClient } = await import("../src/chain.ts");
+    const raw = {
+      blockHash: `0x${"11".repeat(32)}`,
+      blockNumber: "0x10",
+      contractAddress: null,
+      cumulativeGasUsed: "0x5208",
+      effectiveGasPrice: "0x746a528800",
+      from: `0x${"22".repeat(20)}`,
+      gasUsed: "0x5208",
+      logs: [],
+      logsBloom: `0x${"00".repeat(256)}`,
+      status: "0x1",
+      to: `0x${"33".repeat(20)}`,
+      transactionHash: `0x${"44".repeat(32)}`,
+      transactionIndex: "0x1",
+      type: "0x2",
+      l1Fee: "0x10c5c8a4e38",
+      l1GasUsed: "0x640",
+      l1GasPrice: "0x3b9aca00",
+      l1FeeScalar: null,
+    };
+    const formatted = hashkeyMainnet.formatters!.transactionReceipt!.format(raw as never) as never;
+    expect(ChainClient.l1FeeOf(formatted)).toBe(0x10c5c8a4e38n);
+    expect(ChainClient.l1FeeOf({ ...(raw as object), l1Fee: undefined } as never)).toBeNull();
+  });
+});
