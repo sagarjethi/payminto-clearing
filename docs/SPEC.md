@@ -38,8 +38,8 @@ Shared code is imported as `@payminto/protocol` (workspace dependency `"@paymint
 
 - `openMandate(Mandate m, bytes ownerSig) -> bytes32 mandateId` - anyone may submit; owner may be an EOA or ERC-1271 wallet.
 - `revokeMandate(bytes32 id)` - owner or agent; vouchers stay settleable for `REVOKE_GRACE` (1 hour).
-- `settleBatch(bytes32 batchId, bytes32 receiptsRoot, address token, Claim[] claims) -> uint256 transfers` - permissionless; at most 64 claims; one token per batch.
-- `verifyReceipt(bytes32 batchId, bytes32 leaf, bytes32[] proof) -> bool`.
+- `settleBatch(bytes32 batchId, bytes32 receiptsRoot, address token, Claim[] claims) -> uint256 transfers` - permissionless; at most 64 claims; one token per batch; reverts `NothingToSettle` when the claims settle nothing (gross 0); stores `msg.sender` as the batch `settler`.
+- `verifyReceipt(bytes32 batchId, bytes32 leaf, bytes32[] proof) -> bool` - only says the leaf is under the stored root; a proof counts only if `batches[batchId].settler` is the trusted node operator and that operator signed the leaf.
 - Views: `mandates(id)`, `settled(id, payee)`, `batches(batchId)`, `mandateDigest`, `voucherDigest`, `settleDeadline`.
 - Events: `MandateOpened`, `MandateRevoked`, `VoucherSettled(batchId, mandateId, payee, delta)`, `NetTransfer(batchId, from, to, amount)`, `BatchSettled(batchId, receiptsRoot, token, claims, gross, net, transfers)`.
 - A Claim carries only the latest cumulative voucher per (mandate, payee); the hub pays `cumulative - settled[mandate][payee]`.
@@ -141,7 +141,7 @@ Public:
 - `GET /v1/providers` -> public catalog `[{ id, name, description, payee, priceAtomic, resource, category, calls24h }]`.
 - `GET /v1/mandates/:id/position?payee=0x..` -> `{ mandateId, payee, cumulative, settled }` (agents use this to sign the next voucher).
 - `GET /v1/mandates/:id/policy` -> `{ id, status, mandate: MandateJson, policy, payees }`, so agents can enforce their own policy before signing (they verify `policyHash` and `payeesRoot` against the mandate).
-- `GET /v1/receipts/:callId/proof` -> `{ receipt, batchId, receiptsRoot, proof, leaf, txHash, explorerUrl, onchainVerified? }` (`onchainVerified` computed by calling `verifyReceipt`).
+- `GET /v1/receipts/:callId/proof` -> `{ receipt, batchId, receiptsRoot, proof, leaf, txHash, explorerUrl, onchainVerified? }` (`onchainVerified` is true only if the batch settler is this node's operator, the operator signed the leaf, and `verifyReceipt` accepts the proof).
 - `GET /v1/agents/:address/cosign` -> pending HSP mandates to sign `[{ hspPaymentId, typedData }]` (typed data JSON-safe: bigints as strings).
 - `POST /v1/cosign/:hspPaymentId` `{ signerProof }`.
 - `GET /v1/events` -> Server-Sent Events stream (see 5.7). Requires the admin token: `Authorization: Bearer` or `?token=<ADMIN_TOKEN>` (EventSource cannot set headers).
@@ -232,7 +232,7 @@ const { mandate, mandateId, ownerSignature } = await owner.createMandate({
 await owner.submit({ mandate, ownerSignature, policy, payees, label }); // POST /v1/mandates
 
 // Agent side
-const agent = new AgentClient({ nodeUrl?, chainId, hub, account, mandateId, autoCosign: true });
+const agent = new AgentClient({ nodeUrl, chainId, hub, account, mandateId, storePath: "./agent.receipts.db", autoCosign: true });
 await agent.ensureAllowance(walletClient, amount); // one-time approve(hub)
 const res = await agent.fetch("https://provider.example/quote?pair=HSK-USDC"); // handles 402 -> voucher -> retry
 agent.on("receipt", r => ...); agent.on("denied", d => ...);
@@ -244,7 +244,11 @@ app.get("/quote", pay.hono(), handler);            // Hono
 export default { fetch: pay.wrap(handler) };       // any fetch handler
 ```
 
-Agent `fetch` behaviour: on 402 with a `payminto-voucher` requirement, read position from the node, sign `cumulative = position + amount`, retry once with `PAYMENT-SIGNATURE`; on `STALE_CUMULATIVE` refresh and retry up to 3 times with jitter; serialize vouchers per (mandate, payee) inside the client to avoid self-races.
+Agent `fetch` behaviour: on 402 with a `payminto-voucher` requirement, read position from the configured node, sign `cumulative = position + amount`, retry once with `PAYMENT-SIGNATURE`; on `STALE_CUMULATIVE` re-read the position from the configured node and retry up to 3 times with jitter; serialize vouchers per (mandate, payee) inside the client to avoid self-races.
+`nodeUrl` is required; the agent never reads a position or a node identity from a provider response.
+The agent never signs a cumulative above the highest cumulative it has signed for that (mandate, payee), from its own durable store, plus the amount; a node position above that is refused with `POSITION_UNVERIFIED` and nothing is signed.
+A paid receipt is accepted only if it matches the signed voucher and is signed by the operator address from the configured node's `GET /v1/info`.
+Receipts, signed positions and co-sign totals live in a `ReceiptStore`; `storePath` selects the durable `SqliteReceiptStore`, and processes sharing one agent key must share one store.
 Policy is enforced twice: by the agent before signing and by the node before accepting; total cap, allowlist and expiry a third time on chain.
 `AgentClient` checks MANDATE_NOT_ACTIVE, TOKEN_MISMATCH, PAYEE_NOT_ALLOWED, PER_CALL_CAP, RATE_LIMIT, DAILY_CAP and TOTAL_CAP before signing, using a policy verified against the mandate, and a refused call emits `denied` with that rule and produces no signature.
 The agent co-sign loop must refuse to sign an HSP mandate whose amount exceeds what its own accepted receipts justify for that batch (defence against a malicious node).
@@ -254,6 +258,8 @@ The agent co-sign loop must refuse to sign an HSP mandate whose amount exceeds w
 MCP SDK (latest 1.x), `registerTool` API, stdio transport plus Streamable HTTP on port 3334.
 Tools: `list_paid_services`, `call_paid_service { serviceId | url, method, query, body }`, `get_budget` (caps, spent, remaining, today), `get_receipts { limit }`, `prove_receipt { callId }`.
 Configured with an agent key and mandate id via env; spending goes through `AgentClient`, so every MCP tool call is mandate-bound.
+Receipts and signed positions persist in `RECEIPT_STORE_PATH` (default under `PAYMINTO_DATA_DIR`, `~/.payminto`), so a restarted server keeps co-signing and paying.
+`prove_receipt` reports a call as proven only if the batch settler is the node operator, the operator signed the leaf, and `verifyReceipt` accepts the path.
 
 ## 8. Demo (`apps/demo`)
 
