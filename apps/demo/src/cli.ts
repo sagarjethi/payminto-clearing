@@ -7,7 +7,7 @@ import { formatAmount } from "@payminto/protocol";
 import { DemoConfigError, loadDemoConfig, REPO_ROOT, type DemoConfig } from "./config.ts";
 import { checkSummary } from "./checks.ts";
 import { collectSummary, proveCall, runTraffic, settle, type AttackResult, type SettleOutcome, type Summary, type TrafficResult } from "./scenario.ts";
-import { startStack, type Stack } from "./stack.ts";
+import { dashboardPort, startStack, type Stack } from "./stack.ts";
 import { banner, c, progressBar, renderSummary, section, short, usdc, waitEnter, waitEnterOr } from "./ui.ts";
 
 const mode = process.argv[2] === "stage" ? "stage" : "run";
@@ -118,7 +118,7 @@ async function stageMode(cfg: DemoConfig) {
   const who = (a: string) => names.get(a.toLowerCase()) ?? short(a);
   out(section("Dashboard"));
   out(`  start it in another terminal:  ${c.bold(`NEXT_PUBLIC_NODE_URL=${st.nodeUrl} pnpm --filter dashboard dev`)}`);
-  out(`  open http://localhost:3000, sign in with the local admin token, stay on Overview (all zero)`);
+  out(`  open http://localhost:${dashboardPort()}, sign in with the local admin token, stay on Overview (all zero)`);
   if (!cfg.live) {
     // Local anvil dev key only; live keys are never printed.
     out(section("Optional: let Claude spend from the Trading Agent mandate"));

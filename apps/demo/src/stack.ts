@@ -134,7 +134,8 @@ export async function startStack(cfg: DemoConfig, opts: { say?: Say; runDir?: st
       PUBLIC_URL: `http://localhost:${nodePort}`,
       HSP_MODE: "local",
       HSP_COSIGN_TIMEOUT_SEC: String(cfg.cosignTimeoutSec),
-      CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000",
+      // DEMO_DASHBOARD_PORT lets the dashboard run elsewhere when 3000 is taken.
+      CORS_ORIGINS: `http://localhost:${dashboardPort()},http://127.0.0.1:${dashboardPort()}`,
       LOG_LEVEL: "info",
       SETTLE_INTERVAL_SEC: "0",
       FUNDS_REFRESH_SEC: "5",
@@ -348,3 +349,7 @@ export async function startStack(cfg: DemoConfig, opts: { say?: Say; runDir?: st
 }
 
 export const short = (h: string) => `${h.slice(0, 6)}..${h.slice(-4)}`;
+
+export function dashboardPort(): number {
+  return Number(process.env.DEMO_DASHBOARD_PORT ?? 3000);
+}

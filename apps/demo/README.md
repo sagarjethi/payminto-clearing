@@ -22,6 +22,7 @@ pnpm demo:stage
 ```
 
 Same stack, paced (about 14 calls per second, `DEMO_STAGE_PACE`), advancing one demo step per Enter: mandate, agents buying with the two attacks, netting preview, settle (click Settle now in the dashboard, or press Enter in the terminal), batch with HSP status, a judge-picked call proven on chain, and the books.
+If port 3000 is taken, set `DEMO_DASHBOARD_PORT` (for example 3010) and start the dashboard with `-p 3010`; the node then accepts that origin.
 Node and providers keep running afterwards so the dashboard stays live; Ctrl-C stops everything.
 Start the dashboard in a second terminal with the URL the demo prints, for example:
 

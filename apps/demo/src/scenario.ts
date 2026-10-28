@@ -2,7 +2,7 @@ import { erc20Abi, keccak256, parseEventLogs, toBytes, getAddress, type Address,
 import { z } from "zod";
 import { clearingHubAbi, DENIAL_RULES, explorerTx, type DenialRule } from "@payminto/protocol";
 import type { AgentClient } from "@payminto/sdk";
-import type { Stack } from "./stack.ts";
+import { dashboardPort, type Stack } from "./stack.ts";
 
 export type Agent = "treasury" | "trading" | "writer";
 export type CallKind = "quote" | "scan" | "brief" | "feed";
@@ -441,7 +441,7 @@ export async function collectSummary(stack: Stack, traffic: TrafficResult, s: Se
     dropped: s.dropped,
     settleMs: s.ms,
     runMs: Date.now() - runStarted,
-    dashboard: { url: "http://localhost:3000", nodeUrl: stack.nodeUrl },
+    dashboard: { url: `http://localhost:${dashboardPort()}`, nodeUrl: stack.nodeUrl },
     names: Object.fromEntries(stack.names),
     marketDataSource: (await stack.priceSource.quote("HSK")).source,
   };
