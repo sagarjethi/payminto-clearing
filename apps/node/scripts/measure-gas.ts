@@ -1,18 +1,39 @@
 /**
- * Measures real gas on a throwaway anvil: openMandate, settleBatch with 1, 2, 16 and 64 claims (with netting,
- * first and repeat settlement), and a plain ERC-20 transfer, then writes docs/gas.json and docs/GAS.md.
+ * Measures real gas on a throwaway anvil: openMandate, openMandateWithPermit, settleBatch with 1, 2, 16 and 64 claims
+ * (with netting, first and repeat settlement), and a plain ERC-20 transfer, then writes docs/gas.json and docs/GAS.md.
+ * The OP Stack L1 data fee of each measured transaction is priced with read-only eth_calls to the HashKey Chain
+ * mainnet GasPriceOracle (getL1Fee over the unsigned EIP-1559 transaction carrying the measured calldata).
  *
  *   pnpm --filter @payminto/node gas
  *
- * Local anvil only; it never touches a live network or a shared database.
+ * Transactions go to a local anvil only; mainnet is only read (L1_FEE_RPC_URL overrides the RPC, "none" skips it).
+ * It never touches a shared database.
  */
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { erc20Abi, getAddress, keccak256, maxUint256, parseEventLogs, toBytes, type Address, type Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import {
+  createPublicClient,
+  erc20Abi,
+  getAddress,
+  http,
+  keccak256,
+  maxUint256,
+  parseEventLogs,
+  parseSignature,
+  serializeTransaction,
+  toBytes,
+  type Address,
+  type Hex,
+} from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   clearingHubAbi,
+  gasPriceOracleAbi,
+  hashkeyContracts,
+  hashkeyMainnet,
+  mockStablecoinAbi,
+  permitTypedData,
   mandateId as computeMandateId,
   mandateTypedData,
   payeesRoot,
@@ -26,6 +47,42 @@ import { ANVIL_KEYS, deployClearing, mint, startAnvil } from "../test/helpers.ts
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const HSK_BASE_FEE_GWEI = 500n; // research/01-hsp-hashkey-tech.md, measured 2026-10-24
 const CALLS_PER_CLAIM = 10; // gas does not depend on it: the receipts tree is one bytes32 on chain
+const L1_FEE_RPC_URL = process.env.L1_FEE_RPC_URL ?? "https://mainnet.hsk.xyz";
+
+/** Read-only: the mainnet GasPriceOracle's L1 data fee for an unsigned EIP-1559 tx with this calldata, or null. */
+async function mainnetL1Fees(calldata: Hex[]): Promise<{ fees: Array<bigint | null>; block: bigint | null }> {
+  if (L1_FEE_RPC_URL === "none") return { fees: calldata.map(() => null), block: null };
+  try {
+    const client = createPublicClient({ chain: hashkeyMainnet, transport: http(L1_FEE_RPC_URL, { timeout: 15_000, retryCount: 2 }) });
+    const block = await client.getBlockNumber();
+    const fees = await Promise.all(
+      calldata.map((data) =>
+        client.readContract({
+          address: hashkeyContracts[177].gasPriceOracle,
+          abi: gasPriceOracleAbi,
+          functionName: "getL1Fee",
+          blockNumber: block,
+          args: [
+            serializeTransaction({
+              chainId: 177,
+              type: "eip1559",
+              nonce: 1_000,
+              to: getAddress(`0x${"11".repeat(20)}`),
+              data,
+              gas: 3_000_000n,
+              maxFeePerGas: 501_000_000_000n,
+              maxPriorityFeePerGas: 1_000_000n,
+            }),
+          ],
+        }),
+      ),
+    );
+    return { fees, block };
+  } catch (err) {
+    process.stderr.write(`L1 fee not measured (${err instanceof Error ? err.message.split("\n")[0] : String(err)})\n`);
+    return { fees: calldata.map(() => null), block: null };
+  }
+}
 
 const anvil = await startAnvil();
 try {
@@ -44,13 +101,16 @@ try {
   await mint(anvil, token, agents[0]!.address, 10n ** 12n);
   const a0 = anvil.wallet(agentKeys[0]!);
   const coldTo = getAddress(`0x${"c0".repeat(20)}`);
-  const transferCold = (await gas(await a0.writeContract({ address: token, abi: erc20Abi, functionName: "transfer", args: [coldTo, 1_000n] }))).gasUsed;
+  const transferColdHash = await a0.writeContract({ address: token, abi: erc20Abi, functionName: "transfer", args: [coldTo, 1_000n] });
+  const transferCold = (await gas(transferColdHash)).gasUsed;
   const transferWarm = (await gas(await a0.writeContract({ address: token, abi: erc20Abi, functionName: "transfer", args: [coldTo, 1_000n] }))).gasUsed;
+  const transferInput = (await anvil.pub.getTransaction({ hash: transferColdHash })).input;
 
   // One mandate per agent, all funded and approved.
   const now = (await anvil.pub.getBlock()).timestamp;
   const mandates = new Map<Address, Hex>();
   let openMandateGas = 0n;
+  let openMandateInput: Hex = "0x";
   for (const [i, a] of agents.entries()) {
     const policy = { perCallCap: "1000000", dailyCap: "1000000000", maxCallsPerMinute: 0, purpose: `gas ${i}` };
     const m: Mandate = {
@@ -65,11 +125,48 @@ try {
       salt: keccak256(toBytes(`gas-${i}`)),
     };
     const sig = await owner.signTypedData(mandateTypedData(31337, hub, m));
-    const r = await gas(await deployer.writeContract({ address: hub, abi: clearingHubAbi, functionName: "openMandate", args: [m, sig] }));
-    if (i === 0) openMandateGas = r.gasUsed;
+    const openHash = await deployer.writeContract({ address: hub, abi: clearingHubAbi, functionName: "openMandate", args: [m, sig] });
+    const r = await gas(openHash);
+    if (i === 0) {
+      openMandateGas = r.gasUsed;
+      openMandateInput = (await anvil.pub.getTransaction({ hash: openHash })).input;
+    }
     mandates.set(a.address, computeMandateId(31337, hub, m));
     await mint(anvil, token, a.address, 10n ** 12n);
     await gas(await anvil.wallet(agentKeys[i]!).writeContract({ address: token, abi: erc20Abi, functionName: "approve", args: [hub, maxUint256] }));
+  }
+
+  // Gasless onboarding: the same mandate plus the agent's EIP-2612 permit, in one call the operator pays for.
+  const permitAgent = privateKeyToAccount(generatePrivateKey());
+  const pm: Mandate = {
+    owner: owner.address,
+    agent: permitAgent.address,
+    token,
+    totalCap: 10n ** 15n,
+    validAfter: now - 60n,
+    validUntil: now + 86_400n,
+    payeesRoot: payeesRoot([]),
+    policyHash: policyHash({ perCallCap: "1000000", dailyCap: "1000000000", maxCallsPerMinute: 0, purpose: "gas permit" }),
+    salt: keccak256(toBytes("gas-permit")),
+  };
+  const permitSig = parseSignature(
+    await permitAgent.signTypedData(
+      permitTypedData(
+        { name: "USD Coin", version: "1", chainId: 31337, verifyingContract: token },
+        { owner: permitAgent.address, spender: hub, value: maxUint256, nonce: 0n, deadline: now + 3_600n },
+      ),
+    ),
+  );
+  const permitOpenHash = await deployer.writeContract({
+    address: hub,
+    abi: clearingHubAbi,
+    functionName: "openMandateWithPermit",
+    args: [pm, await owner.signTypedData(mandateTypedData(31337, hub, pm)), maxUint256, now + 3_600n, Number(permitSig.v), permitSig.r, permitSig.s],
+  });
+  const openWithPermitGas = (await gas(permitOpenHash)).gasUsed;
+  const openWithPermitInput = (await anvil.pub.getTransaction({ hash: permitOpenHash })).input;
+  if ((await anvil.pub.readContract({ address: token, abi: mockStablecoinAbi, functionName: "allowance", args: [permitAgent.address, hub] })) !== maxUint256) {
+    throw new Error("permit did not set the allowance");
   }
 
   // Payees: the agents themselves (so obligations net) plus eight provider wallets that start empty.
@@ -92,7 +189,7 @@ try {
     return [...out.values()];
   }
 
-  type Row = { claims: number; calls: number; kind: "first" | "repeat"; gasUsed: bigint; transfers: number; calldataBytes: number };
+  type Row = { claims: number; calls: number; kind: "first" | "repeat"; gasUsed: bigint; transfers: number; calldataBytes: number; input: Hex };
   const rows: Row[] = [];
   let batchSeq = 0;
   async function settle(ps: Array<{ agentIdx: number; payee: Address }>, kind: Row["kind"]) {
@@ -119,7 +216,7 @@ try {
     const tx = await anvil.pub.getTransaction({ hash });
     const transfers = parseEventLogs({ abi: clearingHubAbi, logs: r.logs, eventName: "NetTransfer" }).length;
     if (transfers !== projectNetting(flows).transfers.length) throw new Error("projection mismatch");
-    rows.push({ claims: ps.length, calls: ps.length * CALLS_PER_CLAIM, kind, gasUsed: r.gasUsed, transfers, calldataBytes: (tx.input.length - 2) / 2 });
+    rows.push({ claims: ps.length, calls: ps.length * CALLS_PER_CLAIM, kind, gasUsed: r.gasUsed, transfers, calldataBytes: (tx.input.length - 2) / 2, input: tx.input });
   }
   for (const k of [1, 2, 16, 64]) {
     const ps = pairs(k);
@@ -127,13 +224,23 @@ try {
     await settle(ps, "repeat"); // the steady state: same pairs, higher cumulative
   }
 
+  // L1 data fee of each measured transaction, priced by the mainnet GasPriceOracle (read-only).
+  const l1 = await mainnetL1Fees([transferInput, openMandateInput, openWithPermitInput, ...rows.map((r) => r.input)]);
+  const [l1Transfer, l1Open, l1OpenPermit, ...l1Rows] = l1.fees;
   const result = {
     measuredAt: new Date().toISOString(),
     environment: "anvil (local), solc 0.8.24 optimizer 200 runs, MockStablecoin (OpenZeppelin ERC-20)",
     callsPerClaim: CALLS_PER_CLAIM,
-    erc20Transfer: { cold: transferCold.toString(), warm: transferWarm.toString() },
+    l1FeeSource: l1.block === null ? null : { rpc: L1_FEE_RPC_URL, chainId: 177, block: l1.block.toString(), oracle: hashkeyContracts[177].gasPriceOracle },
+    erc20Transfer: { cold: transferCold.toString(), warm: transferWarm.toString(), l1FeeWei: l1Transfer?.toString() ?? null },
     openMandate: openMandateGas.toString(),
-    settleBatch: rows.map((r) => ({ ...r, gasUsed: r.gasUsed.toString(), gasPerClaim: (r.gasUsed / BigInt(r.claims)).toString() })),
+    openMandateWithPermit: openWithPermitGas.toString(),
+    settleBatch: rows.map(({ input: _input, ...r }, i) => ({
+      ...r,
+      gasUsed: r.gasUsed.toString(),
+      gasPerClaim: (r.gasUsed / BigInt(r.claims)).toString(),
+      l1FeeWei: l1Rows[i]?.toString() ?? null,
+    })),
   };
   writeFileSync(join(ROOT, "docs", "gas.json"), JSON.stringify(result, null, 2) + "\n");
 
@@ -144,6 +251,11 @@ try {
     return s;
   };
   const big = rows.find((r) => r.claims === 64 && r.kind === "repeat")!;
+  const bigL1 = l1Rows[rows.indexOf(big)] ?? null;
+  const l2Wei = (g: bigint) => g * HSK_BASE_FEE_GWEI * 10n ** 9n;
+  const hskWei = (wei: bigint | null | undefined) => (wei === null || wei === undefined ? "-" : (Number(wei / 10n ** 9n) / 1e9).toFixed(9));
+  const share = (g: bigint, wei: bigint | null | undefined) =>
+    wei === null || wei === undefined ? "-" : `${((Number(wei) / Number(l2Wei(g) + wei)) * 100).toFixed(3)}%`;
   const naive = BigInt(big.calls) * transferWarm;
   const lines = [
     "# Gas: measured, not estimated",
@@ -165,14 +277,15 @@ try {
     "",
     "## Measurements",
     "",
-    "| Operation | Claims | Calls settled | Net transfers | Gas used | Gas per claim | Calldata bytes | HSK at 500 gwei |",
-    "|---|---|---|---|---|---|---|---|",
-    `| ERC-20 transfer, new recipient | - | 1 | 1 | ${fmt(transferCold)} | - | - | ${hsk(transferCold)} |`,
-    `| ERC-20 transfer, existing recipient | - | 1 | 1 | ${fmt(transferWarm)} | - | - | ${hsk(transferWarm)} |`,
-    `| openMandate (once per mandate) | - | - | - | ${fmt(openMandateGas)} | - | - | ${hsk(openMandateGas)} |`,
+    "| Operation | Claims | Calls settled | Net transfers | Gas used | Gas per claim | Calldata bytes | HSK at 500 gwei | L1 data fee (HSK) | L1 share |",
+    "|---|---|---|---|---|---|---|---|---|---|",
+    `| ERC-20 transfer, new recipient | - | 1 | 1 | ${fmt(transferCold)} | - | ${(transferInput.length - 2) / 2} | ${hsk(transferCold)} | ${hskWei(l1Transfer)} | ${share(transferCold, l1Transfer)} |`,
+    `| ERC-20 transfer, existing recipient | - | 1 | 1 | ${fmt(transferWarm)} | - | ${(transferInput.length - 2) / 2} | ${hsk(transferWarm)} | ${hskWei(l1Transfer)} | ${share(transferWarm, l1Transfer)} |`,
+    `| openMandate (once per mandate) | - | - | - | ${fmt(openMandateGas)} | - | ${(openMandateInput.length - 2) / 2} | ${hsk(openMandateGas)} | ${hskWei(l1Open)} | ${share(openMandateGas, l1Open)} |`,
+    `| openMandateWithPermit (mandate plus allowance, agent sends nothing) | - | - | - | ${fmt(openWithPermitGas)} | - | ${(openWithPermitInput.length - 2) / 2} | ${hsk(openWithPermitGas)} | ${hskWei(l1OpenPermit)} | ${share(openWithPermitGas, l1OpenPermit)} |`,
     ...rows.map(
-      (r) =>
-        `| settleBatch, ${r.kind} | ${r.claims} | ${r.calls} | ${r.transfers} | ${fmt(r.gasUsed)} | ${fmt(r.gasUsed / BigInt(r.claims))} | ${r.calldataBytes} | ${hsk(r.gasUsed)} |`,
+      (r, i) =>
+        `| settleBatch, ${r.kind} | ${r.claims} | ${r.calls} | ${r.transfers} | ${fmt(r.gasUsed)} | ${fmt(r.gasUsed / BigInt(r.claims))} | ${r.calldataBytes} | ${hsk(r.gasUsed)} | ${hskWei(l1Rows[i])} | ${share(r.gasUsed, l1Rows[i])} |`,
     ),
     "",
     "## Cost at a given gas price",
@@ -183,9 +296,22 @@ try {
     "The HSK column uses a base fee of 500 gwei, the HashKey Chain mainnet value measured on 2026-10-24 (research/01-hsp-hashkey-tech.md); re-check it at submission time.",
     "HSK/USD: fill in from a live price source at submission time (not stated here on purpose).",
     "",
+    "## L1 data fee",
+    "",
+    "HashKey Chain is an OP Stack L2, so every transaction also pays an L1 data fee for posting its data to Ethereum, on top of the gas above.",
+    l1.block === null
+      ? "The L1 fee was not measured on this run (mainnet RPC unreachable or L1_FEE_RPC_URL=none); re-run with network access."
+      : `The L1 fee column is the HashKey Chain mainnet GasPriceOracle (\`${hashkeyContracts[177].gasPriceOracle}\`) \`getL1Fee\` at block ${l1.block}, read with eth_call over an unsigned EIP-1559 transaction that carries exactly the measured calldata.`,
+    ...(l1.block !== null && bigL1 !== null
+      ? [
+          `For the ${big.claims}-claim batch it is ${hskWei(bigL1)} HSK against ${hsk(big.gasUsed)} HSK of L2 execution at 500 gwei, ${share(big.gasUsed, bigL1)} of the total, so the 500 gwei L2 base fee dominates and batching savings carry over almost unchanged.`,
+        ]
+      : []),
+    "The L1 fee moves with Ethereum blob and base fees; the node prices it into the operator balance preflight before every settlement (viem op-stack `estimateL1Fee`) and stores the fee each settlement actually paid (`l1Fee` from the OP Stack receipt) per batch.",
+    "",
     "## Caveats",
     "",
-    "- HashKey Chain is an OP Stack L2, so every transaction also pays an L1 data fee that grows with calldata; the calldata column is there to estimate it and it is not included in the gas figures.",
+    "- The gas and \"HSK at 500 gwei\" columns are L2 execution only; the L1 data fee is the separate column above.",
     "- Mainnet USDC.e is a proxied token with more logic than MockStablecoin, so each transferFrom costs somewhat more there; re-run this against a fork for exact mainnet numbers.",
     "- Payee allowlist proofs add calldata and about one hash per proof level per claim; these measurements use mandates without an allowlist.",
     "",
