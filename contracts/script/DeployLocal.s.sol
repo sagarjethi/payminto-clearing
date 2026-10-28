@@ -18,6 +18,7 @@ contract DeployLocal is Script {
         json = vm.serializeAddress("deployment", "token", address(usdc));
         json = vm.serializeUint("deployment", "chainId", block.chainid);
         json = vm.serializeUint("deployment", "blockNumber", block.number);
+        vm.createDir("deployments", true);
         vm.writeJson(json, "deployments/31337.json");
         console2.log("ClearingHub", address(hub));
         console2.log("MockStablecoin", address(usdc));
