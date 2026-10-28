@@ -114,6 +114,12 @@ export function renderSummary(s: Summary): string {
     kv([
       ["trial balance", s.trialBalance.balanced && s.trialBalance.balance === "0" ? c.green(`balanced, ${s.trialBalance.journals} journals, balance 0`) : c.red(`UNBALANCED ${s.trialBalance.balance}`)],
       ["hub token balance", s.hubBalance === 0n ? c.green("0 (non-custodial: wallet to wallet)") : c.red(usdc(s.hubBalance))],
+      [
+        "gasless onboarding",
+        s.gasless.transactions === 0
+          ? c.green(`${s.gasless.label}: EIP-2612 permit, agent sent 0 transactions`)
+          : c.red(`${s.gasless.label}: agent sent ${s.gasless.transactions} transactions`),
+      ],
     ]),
   );
   out.push(section("Dashboard"));

@@ -332,6 +332,8 @@ export type Summary = {
   hsp: Array<{ batch: string; index: number; from: string; to: string; amount: string; status: string; cosigned: boolean }>;
   trialBalance: { balanced: boolean; balance: string; journals: number };
   hubBalance: bigint;
+  /** The permit-onboarded agent and how many transactions it sent during the whole run (must be 0). */
+  gasless: { label: string; address: Address; transactions: number };
   proof: { seq: number; callId: string; batchId: string; proofLength: number; verifiedOnchain: boolean; nodeSaid: boolean | null } | null;
   mcpProof: { callId: string; verified: boolean | null } | null;
   dropped: SettleOutcome["dropped"];
@@ -429,6 +431,11 @@ export async function collectSummary(stack: Stack, traffic: TrafficResult, s: Se
     ),
     trialBalance: { balanced: tb.balanced, balance: tb.balance, journals: tb.journals },
     hubBalance,
+    gasless: {
+      label: stack.gasless.label,
+      address: stack.gasless.address,
+      transactions: (await stack.rpc.pub.getTransactionCount({ address: stack.gasless.address })) - stack.gasless.txBefore,
+    },
     proof: proof ? { seq: proof.seq, callId: proof.callId, batchId: proof.batchId, proofLength: proof.proofLength, verifiedOnchain: proof.verifiedOnchain, nodeSaid: proof.nodeSaid } : null,
     mcpProof,
     dropped: s.dropped,

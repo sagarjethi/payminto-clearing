@@ -124,6 +124,11 @@ describe("pnpm demo scenario (compressed)", () => {
     expect(summary.marketDataSource).toMatch(/deterministic fallback/);
   });
 
+  it("onboards the Research Writer with an EIP-2612 permit: the agent sends no transaction at all", async () => {
+    expect(summary.gasless).toMatchObject({ label: "Research Writer", transactions: 0 });
+    expect(await stack.rpc.pub.getTransactionCount({ address: stack.addresses.writer })).toBe(stack.gasless.txBefore);
+  });
+
   it("uses a disposable database", () => {
     expect(stack.dbPath).toMatch(/\.demo\.db$/);
     expect(stack.dbPath.startsWith(dataDir)).toBe(true);

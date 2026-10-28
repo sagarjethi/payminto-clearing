@@ -18,6 +18,7 @@ export function checkSummary(s: Summary, o: { expectedCalls: number }): string[]
   }
   if (!s.trialBalance.balanced || s.trialBalance.balance !== "0") p.push("trial balance is not zero");
   if (s.hubBalance !== 0n) p.push("hub holds tokens");
+  if (s.gasless.transactions !== 0) p.push(`${s.gasless.label} onboarded with a permit but sent ${s.gasless.transactions} transactions`);
   if (!s.proof?.verifiedOnchain) p.push("Merkle proof not verified on chain");
   if (s.mcpProof && s.mcpProof.verified !== true) p.push("MCP prove_receipt did not verify on chain");
   if (s.hsp.length !== s.transfersOnchain) p.push("HSP records do not match transfers");

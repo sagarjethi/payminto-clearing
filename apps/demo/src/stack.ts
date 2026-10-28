@@ -37,6 +37,11 @@ export type Stack = {
   policies: { treasury: Policy; trading: Policy; writer: Policy };
   caps: { treasury: bigint; trading: bigint; writer: bigint };
   mandateTx: Partial<Record<keyof Mandates, string | null>>;
+  /**
+   * The agent onboarded without gas: its mandate was opened with openMandateWithPermit from an EIP-2612 permit it
+   * signed, so it never approves on chain. `txBefore` is its transaction count before setup.
+   */
+  gasless: { agent: "writer"; label: string; address: Address; txBefore: number };
   /** Treasury pays through the SDK directly. */
   treasury: AgentClient;
   /** The Research Writer's own buyer. */
@@ -195,10 +200,27 @@ export async function startStack(cfg: DemoConfig, opts: { say?: Say; runDir?: st
     const mandates = {} as Mandates;
     const mandateTx: Stack["mandateTx"] = {};
     const labels = { treasury: "Treasury Agent", trading: "Trading Agent", writer: "Research Writer" } as const;
+    const gasless: Stack["gasless"] = {
+      agent: "writer",
+      label: labels.writer,
+      address: addresses.writer,
+      txBefore: await rpc.pub.getTransactionCount({ address: addresses.writer }),
+    };
     for (const who of ["treasury", "trading", "writer"] as const) {
       const agent = addresses[who];
       const m = await owner.createMandate({ agent, token, totalCap: caps[who], validForSeconds: 12 * 3600, payees: payees[who], policy: policies[who] });
-      const res = (await owner.submit({ ...m, policy: policies[who], payees: payees[who], label: labels[who] })) as { status: string; openTxHash?: string | null };
+      // Gasless onboarding for the Research Writer: it signs an EIP-2612 permit (read-only calls, no gas) and the node
+      // opens its mandate with openMandateWithPermit, which also sets the allowance. The others approve on chain.
+      let permit: { value: bigint; deadline: bigint; signature: Hex } | undefined;
+      if (who === gasless.agent) {
+        const signer = new AgentClient({ chainId: cfg.chainId, hub, nodeUrl, account: acct(cfg.keys[who]), mandateId: m.mandateId });
+        permit = await signer.signPermit({ token, value: cfg.live ? caps[who] : maxUint256, publicClient: rpc.pub });
+        signer.close();
+      }
+      const res = (await owner.submit({ ...m, policy: policies[who], payees: payees[who], label: labels[who], permit })) as {
+        status: string;
+        openTxHash?: string | null;
+      };
       if (res.status !== "open") throw new Error(`${labels[who]} mandate is ${res.status}, expected open`);
       mandates[who] = m.mandateId;
       mandateTx[who] = res.openTxHash ?? null;
@@ -250,7 +272,10 @@ export async function startStack(cfg: DemoConfig, opts: { say?: Say; runDir?: st
     });
     // Approve exactly the mandate cap on live networks; unlimited on the local chain.
     await treasury.ensureAllowance(rpc.wallet(cfg.keys.treasury), cfg.live ? caps.treasury : maxUint256, { token, publicClient: rpc.pub });
-    await writer.ensureAllowance(rpc.wallet(cfg.keys.writer), cfg.live ? caps.writer : maxUint256, { token, publicClient: rpc.pub });
+    // The writer's allowance was set by its permit inside openMandateWithPermit: no approve transaction.
+    const writerAllowance = await rpc.pub.readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [addresses.writer, hub] });
+    if (writerAllowance < caps.writer) throw new Error(`Research Writer permit did not set the allowance (${writerAllowance})`);
+    say(`Research Writer onboarded gasless: EIP-2612 permit submitted by the node with openMandateWithPermit, agent sent 0 transactions`);
     await tradingWallet.agent.ensureAllowance(rpc.wallet(cfg.keys.trading), cfg.live ? caps.trading : maxUint256, { token, publicClient: rpc.pub });
 
     const mcp = new Client({ name: "trading-agent", version: "0.1.0" });
@@ -300,6 +325,7 @@ export async function startStack(cfg: DemoConfig, opts: { say?: Say; runDir?: st
       policies,
       caps,
       mandateTx,
+      gasless,
       treasury,
       writer,
       trading: { wallet: tradingWallet, mcp },
