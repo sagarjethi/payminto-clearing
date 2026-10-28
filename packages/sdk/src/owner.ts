@@ -78,8 +78,19 @@ export class OwnerClient {
     return { mandate, mandateId: computeMandateId(this.chainId, this.hub, mandate), ownerSignature };
   }
 
-  /** POST /v1/mandates: the node verifies, opens the mandate on chain (operator pays gas) and starts clearing it. */
-  async submit(args: { mandate: Mandate; ownerSignature: Hex; policy: Policy; payees: readonly Address[]; label: string }) {
+  /**
+   * POST /v1/mandates: the node verifies, opens the mandate on chain (operator pays gas) and starts clearing it.
+   * With `permit` (from AgentClient.signPermit) the node uses openMandateWithPermit, which also sets the agent's
+   * allowance, so the agent needs no HSK and sends no transaction.
+   */
+  async submit(args: {
+    mandate: Mandate;
+    ownerSignature: Hex;
+    policy: Policy;
+    payees: readonly Address[];
+    label: string;
+    permit?: { value: bigint; deadline: bigint; signature: Hex };
+  }) {
     const http = new NodeHttp(this.#o.nodeUrl, { fetch: this.#o.fetch, bearer: this.#o.adminToken });
     return http.post("/v1/mandates", mandateCreatedSchema, {
       mandate: mandateToJson(args.mandate),
@@ -87,6 +98,9 @@ export class OwnerClient {
       policy: args.policy,
       payees: args.payees.map((p) => getAddress(p)),
       label: args.label,
+      ...(args.permit
+        ? { permit: { value: args.permit.value.toString(), deadline: args.permit.deadline.toString(), signature: args.permit.signature } }
+        : {}),
     });
   }
 

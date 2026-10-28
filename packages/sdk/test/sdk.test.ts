@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
-import { getAddress, keccak256, toBytes, type Address, type Hex } from "viem";
+import { getAddress, keccak256, recoverTypedDataAddress, toBytes, type Address, type Hex, type PublicClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   buildNetTransferMandate,
@@ -20,6 +20,9 @@ import {
   isHspMandateSignedBy,
   isVoucherSignedBy,
   receiptLeaf,
+  networks,
+  permitTypedData,
+  tokenDomainSeparator,
   type ClearingReceipt,
 } from "@payminto/protocol";
 import {
@@ -717,5 +720,51 @@ describe("KeyedMutex", () => {
     await fast;
     await other;
     expect(order).toEqual(["c", "a", "b"]);
+  });
+});
+
+describe("AgentClient.signPermit (gasless onboarding)", () => {
+  /** A read-only fake of the token: DOMAIN_SEPARATOR under `served`, permit nonce 3, optional ERC-5267 domain. */
+  function token(chainId: number, address: Address, served: { name: string; version: string }, eip5267 = true) {
+    return {
+      readContract: async ({ functionName }: { functionName: string }) =>
+        functionName === "DOMAIN_SEPARATOR" ? tokenDomainSeparator(chainId, address, served) : 3n,
+      getEip712Domain: async () => {
+        if (!eip5267) throw new Error("no eip712Domain()");
+        return { domain: served };
+      },
+    } as unknown as PublicClient;
+  }
+
+  it("signs USDC.e permits under its real domain (Bridged USDC v2) from chains.ts, with the token's nonce", async () => {
+    const usdce = networks[177]!.token.address;
+    const agent = new AgentClient({ chainId: 177, hub: HUB, account: AGENT, mandateId: MANDATE, nodeUrl: NODE_URL });
+    const p = await agent.signPermit({ token: usdce, value: 5_000_000n, deadline: 2_000_000_000n, publicClient: token(177, usdce, { name: "Bridged USDC", version: "2" }, false) });
+    const signer = await recoverTypedDataAddress({
+      ...permitTypedData(
+        { name: "Bridged USDC", version: "2", chainId: 177, verifyingContract: usdce },
+        { owner: AGENT.address, spender: HUB, value: 5_000_000n, nonce: 3n, deadline: 2_000_000_000n },
+      ),
+      signature: p.signature,
+    });
+    expect(signer).toBe(AGENT.address);
+    expect(p).toMatchObject({ value: 5_000_000n, deadline: 2_000_000_000n });
+  });
+
+  it("refuses to sign when the domain it would use does not match the token's DOMAIN_SEPARATOR", async () => {
+    const usdce = networks[177]!.token.address;
+    const agent = new AgentClient({ chainId: 177, hub: HUB, account: AGENT, mandateId: MANDATE, nodeUrl: NODE_URL });
+    // A token claiming to be USDC.e but serving the "USD Coin" separator: a signature would be rejected on chain.
+    await expect(agent.signPermit({ token: usdce, value: 1n, publicClient: token(177, usdce, { name: "USD Coin", version: "2" }) })).rejects.toThrow(
+      /does not match/,
+    );
+  });
+
+  it("reads other tokens' domains from ERC-5267 eip712Domain(), or takes it explicitly", async () => {
+    const agent = new AgentClient({ chainId: 31337, hub: HUB, account: AGENT, mandateId: MANDATE, nodeUrl: NODE_URL });
+    const local = { name: "USD Coin", version: "1" };
+    await expect(agent.signPermit({ token: TOKEN, value: 1n, publicClient: token(31337, TOKEN, local) })).resolves.toMatchObject({ value: 1n });
+    await expect(agent.signPermit({ token: TOKEN, value: 1n, publicClient: token(31337, TOKEN, local, false) })).rejects.toThrow(/no known EIP-712 domain/);
+    await expect(agent.signPermit({ token: TOKEN, value: 1n, domain: local, publicClient: token(31337, TOKEN, local, false) })).resolves.toBeTruthy();
   });
 });

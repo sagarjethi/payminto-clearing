@@ -28,6 +28,9 @@ import {
   voucherTypedData,
   X402_VERSION,
   DENIAL_RULES,
+  knownTokenDomain,
+  permitTypedData,
+  tokenDomainSeparator,
   type ClearingReceipt,
   type PaymentRequirement,
   type VoucherPayment,
@@ -71,6 +74,11 @@ function refusal(code: string, message: string, details: Record<string, unknown>
     headers: { "content-type": "application/json" },
   });
 }
+
+const eip2612Abi = [
+  { type: "function", name: "DOMAIN_SEPARATOR", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
+  { type: "function", name: "nonces", stateMutability: "view", inputs: [{ name: "owner", type: "address" }], outputs: [{ type: "uint256" }] },
+] as const;
 
 export type AgentClientOptions = {
   chainId: number;
@@ -502,6 +510,45 @@ export class AgentClient extends Emitter<AgentEvents> {
     const rcpt = await reader.waitForTransactionReceipt({ hash });
     if (rcpt.status !== "success") throw new Error(`approve reverted in ${hash}`);
     return hash;
+  }
+
+  /**
+   * Gasless onboarding: signs an EIP-2612 permit that lets the hub pull up to `value` from this agent's wallet. The
+   * owner hands it to the node with the mandate (OwnerClient.submit({ permit })), the node opens the mandate with
+   * openMandateWithPermit and pays the gas, so the agent needs no HSK and sends no transaction. Reads only: the
+   * token's permit nonce and DOMAIN_SEPARATOR, which must equal the domain the agent signs under (chains.ts for the
+   * network token, so USDC.e signs as "Bridged USDC" version "2"; otherwise the token's ERC-5267 eip712Domain()).
+   */
+  async signPermit(args: {
+    token: Address;
+    value: bigint;
+    publicClient: PublicClient;
+    /** Unix seconds; default one hour from now. */
+    deadline?: bigint;
+    /** Override the token's EIP-712 name and version. */
+    domain?: { name: string; version: string };
+  }): Promise<{ value: bigint; deadline: bigint; signature: Hex }> {
+    const token = getAddress(args.token);
+    const pc = args.publicClient;
+    let domain = args.domain ?? knownTokenDomain(this.chainId, token);
+    if (!domain) {
+      const d = await pc.getEip712Domain({ address: token }).catch(() => null);
+      if (!d?.domain.name || !d.domain.version) throw new Error(`token ${token} has no known EIP-712 domain; pass signPermit({ domain })`);
+      domain = { name: d.domain.name, version: d.domain.version };
+    }
+    const onchain = await pc.readContract({ address: token, abi: eip2612Abi, functionName: "DOMAIN_SEPARATOR" });
+    if (onchain.toLowerCase() !== tokenDomainSeparator(this.chainId, token, domain).toLowerCase()) {
+      throw new Error(`EIP-712 domain ${domain.name} v${domain.version} does not match ${token}.DOMAIN_SEPARATOR(); refusing to sign a permit the token would reject`);
+    }
+    const nonce = await pc.readContract({ address: token, abi: eip2612Abi, functionName: "nonces", args: [this.address] });
+    const deadline = args.deadline ?? BigInt(Math.floor(Date.now() / 1000) + 3_600);
+    const signature = await this.account.signTypedData(
+      permitTypedData(
+        { name: domain.name, version: domain.version, chainId: this.chainId, verifyingContract: token },
+        { owner: this.address, spender: this.hub, value: args.value, nonce, deadline },
+      ),
+    );
+    return { value: args.value, deadline, signature };
   }
 
   /** Revokes this mandate at the node (agent-signed), stopping new vouchers immediately. */
