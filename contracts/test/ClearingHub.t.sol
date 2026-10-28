@@ -183,13 +183,41 @@ contract ClearingHubTest is Test {
         _settle("b3", stale);
     }
 
-    function test_settle_replayOfSameVoucherMovesNothing() public {
+    function test_settle_replayOfSameVoucherReverts() public {
         bytes32 id = _open(_mandate(agentA, 100e6, bytes32(0)));
         ClearingHub.Claim memory c = _claim(agentAKey, id, providerX, 2e6);
         _settle("b1", _one(c));
-        uint256 transfers = _settle("b2", _one(c));
-        assertEq(transfers, 0);
+        ClearingHub.Claim[] memory replay = _one(c);
+        vm.expectRevert(ClearingHub.NothingToSettle.selector);
+        _settle("b2", replay);
         assertEq(usdc.balanceOf(providerX), 2e6);
+        (,,, uint64 settledAt,,) = hub.batches("b2");
+        assertEq(settledAt, 0, "a reverted replay stores no batch");
+    }
+
+    /// A batch of already-settled vouchers would otherwise let anyone anchor a receipts root of made-up calls.
+    function test_settle_zeroDeltaBatchCannotAnchorFakeReceiptsRoot() public {
+        bytes32 id = _open(_mandate(agentA, 100e6, bytes32(0)));
+        ClearingHub.Claim memory c = _claim(agentAKey, id, providerX, 2e6);
+        _settle("real", _one(c));
+
+        bytes32 fakeLeaf = keccak256("made-up receipt");
+        ClearingHub.Claim[] memory replay = _one(c);
+        vm.prank(makeAddr("attacker"));
+        vm.expectRevert(ClearingHub.NothingToSettle.selector);
+        hub.settleBatch("fake", fakeLeaf, address(usdc), replay);
+        assertFalse(hub.verifyReceipt("fake", fakeLeaf, new bytes32[](0)));
+    }
+
+    function test_settle_recordsSettler() public {
+        bytes32 id = _open(_mandate(agentA, 100e6, bytes32(0)));
+        address operator = makeAddr("operator");
+        ClearingHub.Claim[] memory claims = _one(_claim(agentAKey, id, providerX, 1e6));
+        vm.prank(operator);
+        hub.settleBatch("op", keccak256("root"), address(usdc), claims);
+        (bytes32 root,, address settler,,,) = hub.batches("op");
+        assertEq(settler, operator);
+        assertEq(root, keccak256("root"));
     }
 
     function test_settle_netsBilateralObligations() public {

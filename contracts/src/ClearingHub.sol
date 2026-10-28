@@ -118,6 +118,7 @@ contract ClearingHub is EIP712, ReentrancyGuard {
     error EmptyBatch();
     error TooManyClaims();
     error StaleVoucher();
+    error NothingToSettle();
 
     constructor() EIP712("Payminto Clearing", "1") {}
 
@@ -169,6 +170,7 @@ contract ClearingHub is EIP712, ReentrancyGuard {
     /// @notice Verifies vouchers, nets every obligation in the batch and pays only net amounts.
     /// @param batchId Unique id chosen by the settler; HSP mandates bind to it via settlementBinding.
     /// @param receiptsRoot Merkle root over every per-call receipt the batch clears, for audit proofs.
+    /// It is stored with msg.sender as settler; it proves nothing unless the settler is a trusted node.
     /// @param token The single ERC-20 every claim in the batch must use.
     function settleBatch(bytes32 batchId, bytes32 receiptsRoot, address token, Claim[] calldata claims)
         external
@@ -194,6 +196,9 @@ contract ClearingHub is EIP712, ReentrancyGuard {
             partyCount = _credit(parties, balances, partyCount, agent, -delta.toInt256());
             partyCount = _credit(parties, balances, partyCount, claims[i].voucher.payee, delta.toInt256());
         }
+        // A batch that moves nothing must not exist: otherwise anyone could replay settled vouchers
+        // to anchor an arbitrary receiptsRoot that verifyReceipt would then accept.
+        if (gross == 0) revert NothingToSettle();
 
         uint256 net;
         (transfers, net) = _payNet(batchId, IERC20(token), parties, balances, partyCount);
@@ -209,7 +214,9 @@ contract ClearingHub is EIP712, ReentrancyGuard {
         emit BatchSettled(batchId, receiptsRoot, token, n, gross, net, transfers);
     }
 
-    /// @notice Proves that a per-call receipt was cleared in a settled batch.
+    /// @notice Proves that a leaf is in the receiptsRoot of a settled batch.
+    /// @dev settleBatch is permissionless, so the root is only as trustworthy as batches[batchId].settler.
+    /// A verifier must also check that the settler is the clearing node it trusts and that the node signed the leaf.
     function verifyReceipt(bytes32 batchId, bytes32 leaf, bytes32[] calldata proof) external view returns (bool) {
         bytes32 root = batches[batchId].receiptsRoot;
         return root != bytes32(0) && MerkleProof.verifyCalldata(proof, root, leaf);
