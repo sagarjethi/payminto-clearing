@@ -198,7 +198,8 @@ export const claimSchema = z.object({
 });
 export type Claim = z.infer<typeof claimSchema>;
 
-export const batchStatusSchema = z.enum(["building", "cosigning", "submitted", "confirmed", "failed"]);
+/** included: one confirmation; confirmed: at or below the node's finality head (CONFIRM_TAG, safe on HashKey Chain). */
+export const batchStatusSchema = z.enum(["building", "cosigning", "submitted", "included", "confirmed", "failed"]);
 export type BatchStatus = z.infer<typeof batchStatusSchema>;
 
 export const batchSchema = z.object({
@@ -215,9 +216,13 @@ export const batchSchema = z.object({
   claims: z.number(),
   transfers: z.number(),
   gasUsed: atomicSchema.nullable().optional(),
+  /** OP Stack L1 data fee in wei; null off OP Stack chains. */
+  l1Fee: atomicSchema.nullable().optional(),
   error: z.string().nullable().optional(),
   createdAt: timeSchema,
+  includedAt: timeSchema.nullable().optional(),
   confirmedAt: timeSchema.nullable().optional(),
+  attestation: z.object({ uid: bytes32Schema, txHash: hex.nullable(), explorerUrl: z.string().nullable() }).nullable().optional(),
 });
 export type Batch = z.infer<typeof batchSchema>;
 
@@ -330,6 +335,7 @@ export type EventType =
   | "mandate.revoked"
   | "batch.started"
   | "batch.submitted"
+  | "batch.included"
   | "batch.confirmed"
   | "batch.failed"
   | "hsp.updated"
@@ -342,6 +348,7 @@ export const EVENT_TYPES: readonly EventType[] = [
   "mandate.revoked",
   "batch.started",
   "batch.submitted",
+  "batch.included",
   "batch.confirmed",
   "batch.failed",
   "hsp.updated",

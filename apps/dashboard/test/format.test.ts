@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { formatMoney, formatRatio, formatToken, percentOf, shortAddress, shortHash } from "@/lib/format";
+import { formatMoney, formatNative, formatRatio, formatToken, percentOf, shortAddress, shortHash } from "@/lib/format";
+import { batchStatusSchema } from "@/lib/schemas";
 
 describe("formatMoney", () => {
   it("keeps exact precision from atomic units without floats", () => {
@@ -52,5 +53,17 @@ describe("ratios", () => {
     expect(percentOf("250", "1000")).toBe(25);
     expect(percentOf("2000", "1000")).toBe(100);
     expect(percentOf("1", "0")).toBe(0);
+  });
+});
+
+describe("finality and L1 fee", () => {
+  it("formats an L1 data fee in HSK with three significant digits", () => {
+    expect(formatNative("1180000000000000")).toBe("0.00118 HSK");
+    expect(formatNative(10n ** 18n)).toBe("1 HSK");
+    expect(formatNative("0")).toBe("0 HSK");
+  });
+
+  it("accepts the included batch status the node reports between one confirmation and the safe head", () => {
+    expect(batchStatusSchema.parse("included")).toBe("included");
   });
 });

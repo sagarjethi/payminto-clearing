@@ -21,6 +21,7 @@ const INVALIDATES: Record<EventType, QueryKey[]> = {
   "mandate.revoked": [qk.mandates, qk.overview],
   "batch.started": [qk.batches],
   "batch.submitted": [qk.batches],
+  "batch.included": [qk.batches],
   "batch.confirmed": [qk.batches, qk.overview, qk.preview, ["calls"], qk.mandates, qk.providers, ["ledger"], qk.trialBalance],
   "batch.failed": [qk.batches, qk.overview, qk.preview],
   "hsp.updated": [qk.batches],

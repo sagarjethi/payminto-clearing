@@ -63,6 +63,12 @@ export function formatGas(units: bigint | string): string {
   return `${n} gas`;
 }
 
+/** Native-token wei as a short decimal, e.g. "0.00118 HSK" (L1 data fees appear only on HashKey Chain). */
+export function formatNative(wei: bigint | string, symbol = "HSK"): string {
+  const n = Number(BigInt(wei)) / 1e18;
+  return `${n === 0 ? "0" : n.toPrecision(3).replace(/\.?0+(e|$)/, "$1")} ${symbol}`;
+}
+
 const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto", style: "short" });
 export function timeAgo(iso: string, now = Date.now()): string {
   const s = Math.round((new Date(iso).getTime() - now) / 1000);

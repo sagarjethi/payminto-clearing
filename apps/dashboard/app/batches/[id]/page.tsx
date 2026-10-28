@@ -2,7 +2,7 @@
 
 import { useParams } from "next/navigation";
 import { useBatch, useMandates } from "@/lib/queries";
-import { formatDateTime, formatGas, formatInt, formatRatio } from "@/lib/format";
+import { formatDateTime, formatGas, formatInt, formatNative, formatRatio } from "@/lib/format";
 import type { HspStatus } from "@/lib/schemas";
 import { Address, Field, Fields, Hash, Money, PageHeader, Panel } from "@/components/app/primitives";
 import { BatchStatusChip, Chip, HSP_EXPLAIN } from "@/components/app/status";
@@ -124,6 +124,8 @@ export default function BatchDetailPage() {
               <Field label="Receipts root"><Hash value={b.receiptsRoot} /></Field>
               <Field label="Token"><Address address={b.token} showName={false} /></Field>
               {b.gasUsed && <Field label="Gas used"><span className="num">{formatGas(b.gasUsed)}</span></Field>}
+              {b.l1Fee && <Field label="L1 data fee"><span className="num">{formatNative(b.l1Fee)}</span></Field>}
+              {b.attestation && <Field label="EAS attestation"><Hash value={b.attestation.uid} /></Field>}
             </Fields>
           </Panel>
           <Panel title="HSP status" description="What each status on a net transfer means">

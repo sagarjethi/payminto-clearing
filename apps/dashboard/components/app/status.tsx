@@ -75,6 +75,7 @@ const BATCH: Record<BatchStatus, { tone: Tone; label: string }> = {
   building: { tone: "neutral", label: "Building" },
   cosigning: { tone: "info", label: "Co-signing" },
   submitted: { tone: "info", label: "Submitted" },
+  included: { tone: "info", label: "Included" },
   confirmed: { tone: "positive", label: "Confirmed" },
   failed: { tone: "negative", label: "Failed" },
 };

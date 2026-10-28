@@ -90,7 +90,8 @@ export default function NettingPage() {
     if (phase !== "settling") return -1;
     const mine = live.events.filter((e) => new Date(e.at).getTime() >= startedAt - 500);
     if (result.data?.status === "confirmed" || mine.some((e) => e.type === "batch.confirmed")) return 4;
-    if (result.data?.status === "submitted" || mine.some((e) => e.type === "batch.submitted")) return 3;
+    // Included (one confirmation) still waits for the node's finality head before it counts as confirmed.
+    if (result.data?.status === "submitted" || result.data?.status === "included" || mine.some((e) => e.type === "batch.submitted" || e.type === "batch.included")) return 3;
     if (result.data?.status === "cosigning" || mine.some((e) => e.type === "batch.started")) return 1;
     return 0;
   }, [phase, live.events, result.data, startedAt]);
