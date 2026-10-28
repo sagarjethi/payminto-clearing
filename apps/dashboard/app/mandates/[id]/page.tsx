@@ -7,12 +7,14 @@ import { hasInjectedWallet } from "@/lib/sign";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, Loader2, Radio, Wallet } from "lucide-react";
+import { Ban, CalendarClock, CalendarRange, Coins, Gauge, Loader2, PiggyBank, Radio, ShieldCheck, Store, Wallet, type LucideIcon } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
 import { useApi } from "@/lib/session";
 import { qk, flattenCallPages, useCallPages, useInfo, useMandate, useToken } from "@/lib/queries";
 import { formatDate, formatDateTime, formatInt, formatMoney, percentOf, timeAgo } from "@/lib/format";
+import { budgetSplit, daysLeft, describeDaysLeft } from "@/lib/spend";
+import { cn } from "@/lib/utils";
 import { ApiError } from "@/lib/api";
 import type { MandateDetail } from "@/lib/schemas";
 import { axisTick, chartColor } from "@/lib/chart-theme";
@@ -29,8 +31,8 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Address, Field, Fields, Hash, Meter, Money, PageHeader, Panel, PartyLine } from "@/components/app/primitives";
-import { CallStatusChip, MandateStatusChip, RuleChip } from "@/components/app/status";
-import { StatStrip } from "@/components/app/stat-strip";
+import { CallStatusChip, MandateStatusChip } from "@/components/app/status";
+import { DenialItem } from "@/components/app/denial";
 import { AgentWallet } from "@/components/app/agent-wallet";
 import { BlockSkeleton, EmptyState, ErrorState, RowsSkeleton } from "@/components/app/states";
 
@@ -60,8 +62,6 @@ export default function MandateDetailPage() {
     );
   }
   const m = q.data;
-  const used = BigInt(m.spend.settled) + BigInt(m.spend.pending);
-  const pct = percentOf(used, m.mandate.totalCap);
 
   return (
     <>
@@ -78,25 +78,7 @@ export default function MandateDetailPage() {
 
       {m.status === "revoked" && <RevokedNotice m={m} />}
 
-      <StatStrip
-        stats={[
-          {
-            label: "Total cap",
-            value: <Money atomic={m.mandate.totalCap} maxFraction={2} />,
-            note: (
-              <span className="flex items-center gap-2">
-                <span className="w-16 shrink-0">
-                  <Meter value={pct} tone={pct > 90 ? "negative" : pct > 75 ? "warning" : "primary"} label="Total cap used" />
-                </span>
-                {pct.toFixed(1)}% used
-              </span>
-            ),
-          },
-          { label: "Settled", value: <Money atomic={m.spend.settled} maxFraction={4} />, note: "paid on chain" },
-          { label: "Awaiting netting", value: <Money atomic={m.spend.pending} maxFraction={4} />, note: "accepted, not yet settled" },
-          { label: "Remaining", value: <Money atomic={m.spend.remaining} maxFraction={4} />, note: <>Today <Money atomic={m.spend.today} maxFraction={4} /> of <Money atomic={m.policy.dailyCap} maxFraction={2} /></> },
-        ]}
-      />
+      <Budget m={m} />
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <div className="flex min-w-0 flex-col gap-5">
@@ -105,34 +87,141 @@ export default function MandateDetailPage() {
           <DenialsList m={m} />
         </div>
         <div className="flex min-w-0 flex-col gap-5">
-          <Panel title="Policy" description="Enforced by this node on every call; committed on chain as policyHash">
-            <Fields>
-              <Field label="Per-call cap"><Money atomic={m.policy.perCallCap} /></Field>
-              <Field label="Daily cap"><Money atomic={m.policy.dailyCap} /></Field>
-              <Field label="Rate limit">{m.policy.maxCallsPerMinute ? `${formatInt(m.policy.maxCallsPerMinute)} calls per minute` : "No limit"}</Field>
-              <Field label="Valid">
-                {formatDate(Number(m.mandate.validAfter))} to {formatDate(Number(m.mandate.validUntil))}
-              </Field>
-              <Field label="Allowed payees">
-                {m.payees.length === 0 ? (
-                  <span className="text-muted-foreground">Any payee</span>
-                ) : (
-                  <ul className="space-y-2">
-                    {m.payees.map((p) => (
-                      <li key={p}>
-                        <PartyLine address={p} />
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Field>
-            </Fields>
-          </Panel>
+          <SpendControls m={m} />
           <AgentWallet m={m} />
           <OnChain m={m} />
         </div>
       </div>
     </>
+  );
+}
+
+/** The budget at a glance: what is left, and a bar of settled, awaiting netting and remaining. */
+function Budget({ m }: { m: MandateDetail }) {
+  const split = budgetSplit(m.spend.settled, m.spend.pending, m.mandate.totalCap);
+  const days = daysLeft(m.mandate.validUntil);
+  return (
+    <section aria-label="Budget" className="rounded-xl border bg-card p-5 sm:p-6">
+      <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
+        <div>
+          <p className="text-xs text-muted-foreground">Remaining budget</p>
+          <p className="mt-1 text-[2rem] leading-none font-semibold tracking-[-0.025em]">
+            <Money atomic={m.spend.remaining} maxFraction={4} />
+          </p>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          <span className="num font-medium text-foreground">{split.usedPct.toFixed(1)}%</span> of <Money atomic={m.mandate.totalCap} maxFraction={2} className="text-foreground" /> used
+          <span className="mx-2 text-subtle" aria-hidden>
+            |
+          </span>
+          <span className={cn(days < 0 && "text-negative")}>{describeDaysLeft(days)}</span>
+        </p>
+      </div>
+      <div
+        className="mt-4 flex h-2.5 w-full overflow-hidden rounded-full bg-muted"
+        role="meter"
+        aria-label="Total budget used"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(split.usedPct)}
+      >
+        <div className={cn("h-full transition-[width] duration-500", split.tone === "negative" ? "bg-negative" : split.tone === "warning" ? "bg-warning" : "bg-primary")} style={{ width: `${split.settledPct}%` }} />
+        <div
+          className={cn("h-full transition-[width] duration-500", split.tone === "negative" ? "bg-negative/40" : split.tone === "warning" ? "bg-warning/40" : "bg-primary/35")}
+          style={{ width: `${split.pendingPct}%` }}
+        />
+      </div>
+      <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5 text-sm">
+        <div className="flex items-center gap-2">
+          <span aria-hidden className={cn("size-2 rounded-full", split.tone === "primary" ? "bg-primary" : split.tone === "warning" ? "bg-warning" : "bg-negative")} />
+          <dt className="text-muted-foreground">Settled on chain</dt>
+          <dd><Money atomic={m.spend.settled} maxFraction={4} /></dd>
+        </div>
+        <div className="flex items-center gap-2">
+          <span aria-hidden className={cn("size-2 rounded-full", split.tone === "primary" ? "bg-primary/35" : split.tone === "warning" ? "bg-warning/40" : "bg-negative/40")} />
+          <dt className="text-muted-foreground">Awaiting netting</dt>
+          <dd><Money atomic={m.spend.pending} maxFraction={4} /></dd>
+        </div>
+        <div className="flex items-center gap-2">
+          <span aria-hidden className="size-2 rounded-full bg-muted ring-1 ring-border" />
+          <dt className="text-muted-foreground">Remaining</dt>
+          <dd><Money atomic={m.spend.remaining} maxFraction={4} /></dd>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+function Control({ icon: Icon, title, value, children }: { icon: LucideIcon; title: string; value: React.ReactNode; children?: React.ReactNode }) {
+  return (
+    <li className="flex gap-3 px-4 py-3.5 sm:px-5">
+      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground" aria-hidden>
+        <Icon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+          <p className="text-sm font-medium">{title}</p>
+          <p className="text-sm">{value}</p>
+        </div>
+        {children && <div className="mt-1.5 text-xs text-muted-foreground">{children}</div>}
+      </div>
+    </li>
+  );
+}
+
+/** Each policy rule as a control row with its live usage, the way card programs show spend controls. */
+function SpendControls({ m }: { m: MandateDetail }) {
+  const used = BigInt(m.spend.settled) + BigInt(m.spend.pending);
+  const totalPct = percentOf(used, m.mandate.totalCap);
+  const dailyPct = percentOf(m.spend.today, m.policy.dailyCap);
+  const tone = (p: number): "negative" | "warning" | "primary" => (p > 90 ? "negative" : p > 75 ? "warning" : "primary");
+  const days = daysLeft(m.mandate.validUntil);
+  return (
+    <Panel
+      title="Spend controls"
+      description="Enforced on every call by this node and again on chain at settlement"
+      bodyClassName="p-0 sm:p-0"
+    >
+      <ul className="divide-y">
+        <Control icon={PiggyBank} title="Total budget" value={<><Money atomic={used} maxFraction={4} /> <span className="text-muted-foreground">of</span> <Money atomic={m.mandate.totalCap} maxFraction={2} /></>}>
+          <Meter value={totalPct} tone={tone(totalPct)} label="Total budget used" />
+        </Control>
+        <Control icon={CalendarClock} title="Daily cap" value={<><Money atomic={m.spend.today} maxFraction={4} /> <span className="text-muted-foreground">of</span> <Money atomic={m.policy.dailyCap} maxFraction={2} /></>}>
+          <Meter value={dailyPct} tone={tone(dailyPct)} label="Daily cap used" />
+          <p className="mt-1.5">Rolling 24 hours</p>
+        </Control>
+        <Control icon={Coins} title="Per-call cap" value={<>Up to <Money atomic={m.policy.perCallCap} /></>}>
+          A call priced above this is refused before it is booked.
+        </Control>
+        <Control
+          icon={Gauge}
+          title="Rate limit"
+          value={m.policy.maxCallsPerMinute ? <span className="num">{formatInt(m.policy.maxCallsPerMinute)} calls / min</span> : <span className="text-muted-foreground">No limit</span>}
+        />
+        <Control
+          icon={Store}
+          title="Allowed payees"
+          value={m.payees.length === 0 ? <span className="text-muted-foreground">Any payee</span> : <span className="num">{m.payees.length} {m.payees.length === 1 ? "payee" : "payees"}</span>}
+        >
+          {m.payees.length > 0 && (
+            <ul className="mt-1 space-y-2 text-sm text-foreground">
+              {m.payees.map((p) => (
+                <li key={p}>
+                  <PartyLine address={p} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </Control>
+        <Control icon={CalendarRange} title="Validity" value={<span className={cn(days < 0 && "text-negative")}>{describeDaysLeft(days)}</span>}>
+          {formatDate(Number(m.mandate.validAfter))} to {formatDate(Number(m.mandate.validUntil))}
+        </Control>
+      </ul>
+      <p className="flex items-start gap-2 border-t px-4 py-3 text-xs text-muted-foreground sm:px-5">
+        <ShieldCheck className="mt-px size-3.5 shrink-0 text-positive" aria-hidden />
+        Signed once by the owner and committed on chain as policyHash. Changing a control needs a new mandate.
+      </p>
+    </Panel>
   );
 }
 
@@ -350,25 +439,15 @@ function CallsTable({ m }: { m: MandateDetail }) {
 
 function DenialsList({ m }: { m: MandateDetail }) {
   return (
-    <Panel title="Denials" description="Calls refused before any money moved" bodyClassName="p-0 sm:p-0">
+    <Panel title="Blocked by these controls" description="Calls refused before any money moved" bodyClassName="p-0 sm:p-0">
       {m.denials.length === 0 ? (
-        <EmptyState className="py-8" title="No denials">Every voucher under this mandate stayed inside its policy.</EmptyState>
+        <EmptyState className="py-8" icon={<ShieldCheck className="size-4" />} title="Nothing blocked">
+          Every voucher under this mandate stayed inside its controls.
+        </EmptyState>
       ) : (
         <ul className="divide-y">
           {m.denials.map((d) => (
-            <li key={d.id} className="flex flex-col gap-1.5 px-4 py-3 sm:flex-row sm:items-center sm:gap-4 sm:px-5">
-              <RuleChip rule={d.rule} />
-              <span className="min-w-0 flex-1 text-sm">
-                <span className="block text-foreground">{d.message}</span>
-                {d.payee && (
-                  <span className="text-xs text-muted-foreground">
-                    Payee <Address address={d.payee} showName={false} explorer={false} />
-                    {d.amount ? <> for <Money atomic={d.amount} /></> : null}
-                  </span>
-                )}
-              </span>
-              <time className="num text-xs whitespace-nowrap text-subtle" dateTime={d.createdAt}>{timeAgo(d.createdAt)}</time>
-            </li>
+            <DenialItem key={d.id} denial={d} showMandate={false} />
           ))}
         </ul>
       )}
