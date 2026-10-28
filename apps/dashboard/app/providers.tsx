@@ -33,7 +33,8 @@ export function Providers({ children }: { children: ReactNode }) {
             </LiveProvider>
           </SessionProvider>
         </TooltipProvider>
-        <Toaster position="bottom-right" />
+        {/* Clear the phone tab bar (4rem plus the safe area). */}
+        <Toaster position="bottom-right" mobileOffset={{ bottom: "calc(5rem + env(safe-area-inset-bottom))" }} />
       </QueryClientProvider>
     </ThemeProvider>
   );

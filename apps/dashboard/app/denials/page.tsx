@@ -30,8 +30,8 @@ export default function DenialsPage() {
         description="Every voucher the policy engine refused. A refused call is never booked or settled, so no money moves."
       />
 
-      <section className="mb-5 flex flex-col gap-4 rounded-xl border bg-card p-5 sm:flex-row sm:items-center">
-        <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-positive-soft text-positive" aria-hidden>
+      <section className="mb-5 flex items-start gap-4 rounded-xl border bg-card p-4 sm:items-center sm:p-5">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-positive-soft text-positive sm:size-11" aria-hidden>
           <ShieldCheck className="size-5" />
         </span>
         <div className="min-w-0 flex-1">
