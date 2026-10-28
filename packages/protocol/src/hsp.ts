@@ -66,6 +66,8 @@ export const CAPABILITIES = {
   settlementVerified: "proves:settlement-verified:v1",
   mandateBound: "proves:payminto-mandate-bound:v1",
   nettingBatch: "proves:payminto-netting-batch:v1",
+  /** The batch is attested on EAS (HashKey Chain predeploy) by the clearing node (EAS_ATTEST=true). */
+  batchAttested: "attests:payminto-batch-settled:v1",
 } as const;
 
 export function hspDomain(chainId: number, verifyingContract: Address) {
