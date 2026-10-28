@@ -37,7 +37,7 @@ export default function DenialsPage() {
         <div className="min-w-0 flex-1">
           <p className="font-medium">Policy engine active</p>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            The node checks each voucher against its signed mandate before it books anything. ClearingHub checks the same caps again on chain when a batch settles.
+            The agent checks its mandate before signing, and the node checks every voucher before it books anything. When a batch settles, ClearingHub enforces the total cap, payee allowlist and expiry again on chain.
           </p>
         </div>
       </section>
