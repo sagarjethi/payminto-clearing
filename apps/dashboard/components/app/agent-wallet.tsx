@@ -17,6 +17,11 @@ import { Label } from "@/components/ui/label";
 import { Field, Fields, Money, Panel } from "./primitives";
 
 /** What the hub may still pull from the agent under this mandate: total cap minus what already settled. */
+/** Wallets that approve type(uint256).max (or close to it) are shown as Unlimited instead of a 78-digit number. */
+export function isUnlimited(allowance: bigint): boolean {
+  return allowance >= 2n ** 255n;
+}
+
 export function allowanceNeeded(m: Pick<MandateDetail, "mandate" | "spend">): bigint {
   const need = BigInt(m.mandate.totalCap) - BigInt(m.spend.settled);
   return need > 0n ? need : 0n;
@@ -88,7 +93,13 @@ export function AgentWallet({ m }: { m: MandateDetail }) {
           {allowance === null ? (
             <span className="text-muted-foreground">Not read yet</span>
           ) : (
-            <Money atomic={allowance} className={short ? "text-warning" : undefined} />
+            isUnlimited(allowance) ? (
+              <span className="text-warning" title="The agent approved the maximum uint256 amount. Approving exactly the mandate cap is safer.">
+                Unlimited
+              </span>
+            ) : (
+              <Money atomic={allowance} className={short ? "text-warning" : undefined} />
+            )
           )}
         </Field>
         <Field label="Needed">

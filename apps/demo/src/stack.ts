@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join, relative } from "node:path";
-import { erc20Abi, maxUint256, type Address, type Hex } from "viem";
+import { erc20Abi, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { z } from "zod";
 import { formatAmount, networkFor, type Policy } from "@payminto/protocol";
@@ -215,7 +215,7 @@ export async function startStack(cfg: DemoConfig, opts: { say?: Say; runDir?: st
       let permit: { value: bigint; deadline: bigint; signature: Hex } | undefined;
       if (who === gasless.agent) {
         const signer = new AgentClient({ chainId: cfg.chainId, hub, nodeUrl, account: acct(cfg.keys[who]), mandateId: m.mandateId });
-        permit = await signer.signPermit({ token, value: cfg.live ? caps[who] : maxUint256, publicClient: rpc.pub });
+        permit = await signer.signPermit({ token, value: caps[who], publicClient: rpc.pub });
         signer.close();
       }
       const res = (await owner.submit({ ...m, policy: policies[who], payees: payees[who], label: labels[who], permit })) as {
@@ -271,13 +271,13 @@ export async function startStack(cfg: DemoConfig, opts: { say?: Say; runDir?: st
       writer.close();
       tradingWallet.close();
     });
-    // Approve exactly the mandate cap on live networks; unlimited on the local chain.
-    await treasury.ensureAllowance(rpc.wallet(cfg.keys.treasury), cfg.live ? caps.treasury : maxUint256, { token, publicClient: rpc.pub });
+    // Approve exactly the mandate cap, never unlimited: the allowance is the agent's on-chain spending ceiling.
+    await treasury.ensureAllowance(rpc.wallet(cfg.keys.treasury), caps.treasury, { token, publicClient: rpc.pub });
     // The writer's allowance was set by its permit inside openMandateWithPermit: no approve transaction.
     const writerAllowance = await rpc.pub.readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [addresses.writer, hub] });
     if (writerAllowance < caps.writer) throw new Error(`Research Writer permit did not set the allowance (${writerAllowance})`);
     say(`Research Writer onboarded gasless: EIP-2612 permit submitted by the node with openMandateWithPermit, agent sent 0 transactions`);
-    await tradingWallet.agent.ensureAllowance(rpc.wallet(cfg.keys.trading), cfg.live ? caps.trading : maxUint256, { token, publicClient: rpc.pub });
+    await tradingWallet.agent.ensureAllowance(rpc.wallet(cfg.keys.trading), caps.trading, { token, publicClient: rpc.pub });
 
     const mcp = new Client({ name: "trading-agent", version: "0.1.0" });
     const [clientT, serverT] = InMemoryTransport.createLinkedPair();
