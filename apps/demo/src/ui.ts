@@ -34,7 +34,23 @@ export function section(title: string): string {
   return `\n${c.bold(c.blue(`== ${title} `))}${c.blue("=".repeat(Math.max(4, 64 - title.length)))}`;
 }
 
-function kv(rows: Array<[string, string]>): string {
+/** A stage step header: a numbered, bold banner line that reads at a glance on camera. */
+export function stepHeader(n: number, total: number, title: string, sub?: string): string {
+  const tag = ` STEP ${n}/${total} `;
+  const head = useColor ? `\x1b[1;30;46m${tag}\x1b[0m` : `[${tag.trim()}]`;
+  const rule = c.cyan("-".repeat(Math.max(4, 58 - title.length)));
+  return `\n\n${head} ${c.bold(title)} ${rule}${sub ? `\n  ${c.dim(sub)}` : ""}\n`;
+}
+
+/** Cuts long text at a word boundary so a line never ends mid-word. */
+export function clip(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const at = cut.lastIndexOf(" ");
+  return `${(at > max * 0.6 ? cut.slice(0, at) : cut).replace(/[\s,.;:]+$/, "")}...`;
+}
+
+export function kv(rows: Array<[string, string]>): string {
   const w = Math.max(...rows.map(([k]) => k.length));
   return rows.map(([k, v]) => `  ${c.dim(k.padEnd(w))}  ${v}`).join("\n");
 }
@@ -65,7 +81,7 @@ export function renderSummary(s: Summary): string {
       ["paid calls", `${c.bold(int(s.calls))}${failed}  ${c.dim(`${s.callsPerSec.toFixed(0)} calls/s, zero gas for agents`)}`],
       ["gross", c.bold(usdc(s.gross))],
       ["net moved", `${c.bold(usdc(s.net))}  ${c.dim(`${s.gross > 0n ? ((Number(s.net) / Number(s.gross)) * 100).toFixed(1) : "0"}% of gross`)}`],
-      ["batches", `${s.batches.length}  ${c.dim(`settled in ${(s.settleMs / 1000).toFixed(1)} s`)}`],
+      ["batches", `${s.batches.length}${s.settleMs > 0 ? `  ${c.dim(`settled in ${(s.settleMs / 1000).toFixed(1)} s`)}` : ""}`],
       ["on-chain transfers", `${c.bold(String(s.transfersOnchain))}  ${c.dim("NetTransfer events decoded from tx receipts")}`],
       ["compression", c.bold(c.green(`${s.compression.toFixed(1)} calls per on-chain transfer`))],
       ["market data source", c.dim(s.marketDataSource)],
@@ -89,7 +105,7 @@ export function renderSummary(s: Summary): string {
   out.push(section("Net transfers and HSP"));
   const who = (a: string) => pad(s.names[a.toLowerCase()] ?? short(a), 16);
   for (const h of s.hsp) {
-    out.push(`  #${h.index}  ${who(h.from)} -> ${who(h.to)} ${pad(usdc(h.amount), 14)}  HSP ${pad(hspColor(h.status), 8)} ${h.cosigned ? c.dim("co-signed by debtor") : c.yellow("not co-signed")}`);
+    out.push(`  #${h.index + 1}  ${who(h.from)} -> ${who(h.to)} ${pad(usdc(h.amount), 14)}  HSP ${pad(hspColor(h.status), 8)} ${h.cosigned ? c.dim("co-signed by debtor") : c.yellow("not co-signed")}`);
   }
   out.push(section("Denials (recorded by the node)"));
   if (s.denials.length === 0) out.push(c.dim("  none"));
@@ -102,30 +118,68 @@ export function renderSummary(s: Summary): string {
         ? c.yellow(`never reached the node (refused locally ${a.compromisedLocalRule})`)
         : c.red("node ACCEPTED");
     out.push(`  ${c.dim("attack")} ${a.agent} via ${a.via.toUpperCase()}: ${a.name} -> ${l1}, compromised runtime -> ${l2}`);
-    if (a.toolText) out.push(`         ${c.dim(`MCP tool error: "${a.toolText.slice(0, 150)}${a.toolText.length > 150 ? "..." : ""}"`)}`);
+    if (a.toolText) out.push(`         ${c.dim(`MCP tool error: "${clip(a.toolText, 150)}"`)}`);
   }
   out.push(section("Proof and books"));
+  const proofRows: Array<[string, string]> = [];
   if (s.proof) {
     const v = s.proof.verifiedOnchain ? c.green("true") : c.red("false");
-    out.push(kv([["call #" + s.proof.seq, `${short(s.proof.callId)} in batch ${short(s.proof.batchId)}, ${s.proof.proofLength}-step Merkle path, ClearingHub.verifyReceipt = ${c.bold(v)}`]]));
-  } else out.push(c.red("  no settled call to prove"));
-  if (s.mcpProof) out.push(kv([["MCP prove_receipt", `${short(s.mcpProof.callId)} -> verified on chain: ${s.mcpProof.verified ? c.green("true") : c.red(String(s.mcpProof.verified))}`]]));
-  out.push(
-    kv([
-      ["trial balance", s.trialBalance.balanced && s.trialBalance.balance === "0" ? c.green(`balanced, ${s.trialBalance.journals} journals, balance 0`) : c.red(`UNBALANCED ${s.trialBalance.balance}`)],
-      ["hub token balance", s.hubBalance === 0n ? c.green("0 (non-custodial: wallet to wallet)") : c.red(usdc(s.hubBalance))],
-      [
-        "gasless onboarding",
-        s.gasless.transactions === 0
-          ? c.green(`${s.gasless.label}: EIP-2612 permit, agent sent 0 transactions`)
-          : c.red(`${s.gasless.label}: agent sent ${s.gasless.transactions} transactions`),
-      ],
-    ]),
+    proofRows.push([`call #${s.proof.seq}`, `${short(s.proof.callId)} in batch ${short(s.proof.batchId)}, ${s.proof.proofLength}-step Merkle path, ClearingHub.verifyReceipt = ${c.bold(v)}`]);
+  } else proofRows.push(["proof", c.red("no settled call to prove")]);
+  if (s.mcpProof) proofRows.push(["MCP prove_receipt", `${short(s.mcpProof.callId)} -> verified on chain: ${s.mcpProof.verified ? c.green("true") : c.red(String(s.mcpProof.verified))}`]);
+  proofRows.push(
+    ["trial balance", s.trialBalance.balanced && s.trialBalance.balance === "0" ? c.green(`balanced, ${s.trialBalance.journals} journals, balance 0`) : c.red(`UNBALANCED ${s.trialBalance.balance}`)],
+    ["hub token balance", s.hubBalance === 0n ? c.green("0 (non-custodial: wallet to wallet)") : c.red(usdc(s.hubBalance))],
+    [
+      "gasless onboarding",
+      s.gasless.transactions === 0
+        ? c.green(`${s.gasless.label}: EIP-2612 permit, agent sent 0 transactions`)
+        : c.red(`${s.gasless.label}: agent sent ${s.gasless.transactions} transactions`),
+    ],
   );
+  out.push(kv(proofRows));
   out.push(section("Dashboard"));
-  out.push(kv([["node", s.dashboard.nodeUrl], ["dashboard", `${s.dashboard.url}  ${c.dim(`(NEXT_PUBLIC_NODE_URL=${s.dashboard.nodeUrl} pnpm --filter dashboard dev)`)}`]]));
+  const port = new URL(s.dashboard.url).port;
+  out.push(kv([["node", s.dashboard.nodeUrl], ["dashboard", `${s.dashboard.url}  ${c.dim(`(NEXT_PUBLIC_NODE_URL=${s.dashboard.nodeUrl} pnpm --filter dashboard dev${port && port !== "3000" ? ` -p ${port}` : ""})`)}`]]));
   out.push(c.dim(`\n  total run time ${(s.runMs / 1000).toFixed(1)} s`));
   return out.join("\n");
+}
+
+/**
+ * DEMO_STAGE_AUTO=1 advances every stage step on a timer (DEMO_STAGE_STEP_MS, default 4000) so a film can be recorded
+ * without touching the keyboard; Enter still skips ahead when stdin is a terminal.
+ */
+export const stageAuto = process.env.DEMO_STAGE_AUTO === "1";
+const msEnv = (name: string, fallback: number) => {
+  const v = process.env[name];
+  const n = v === undefined || v === "" ? fallback : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+export const stageStepMs = Math.max(0, msEnv("DEMO_STAGE_STEP_MS", 4000));
+/** Auto mode only: how long the pre-settle state stays up for a dashboard click; 0 or less waits for the dashboard. */
+export const stageSettleDelayMs = msEnv("DEMO_STAGE_SETTLE_DELAY_MS", 20_000);
+
+const secs = (ms: number) => `${Math.round(ms / 100) / 10} s`;
+
+/** Next stage step: Enter in manual mode, a timer (or Enter) in auto mode. */
+export function advance(next: string): Promise<string> {
+  if (!stageAuto) return waitEnter(c.cyan(`\n  [Enter] ${next} `));
+  process.stdout.write(c.dim(`\n  next: ${next} (auto, ${secs(stageStepMs)})\n`));
+  return raceEnter(stageStepMs).then(() => "");
+}
+
+/** Resolves after `ms`, or earlier on Enter when stdin is a terminal. */
+function raceEnter(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const rl = process.stdin.isTTY ? createInterface({ input: process.stdin }) : null;
+    const done = () => {
+      clearTimeout(timer);
+      rl?.close();
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    rl?.once("line", done);
+  });
 }
 
 /** Stage mode: waits for Enter (or returns at once when stdin is not a terminal). */
@@ -143,15 +197,21 @@ export function waitEnter(prompt: string): Promise<string> {
   });
 }
 
-/** Waits for Enter, or resolves early when `poll` returns true (checked every `everyMs`). */
-export function waitEnterOr(prompt: string, poll: () => Promise<boolean>, everyMs = 500): Promise<"enter" | "poll"> {
+/**
+ * Waits for Enter, or resolves early when `poll` returns true (checked every `everyMs`).
+ * With `autoMs` (auto mode) it also resolves as "enter" after that long; `autoMs <= 0` waits for `poll` (or Enter) only.
+ */
+export function waitEnterOr(prompt: string, poll: () => Promise<boolean>, opts: { everyMs?: number; autoMs?: number } = {}): Promise<"enter" | "poll"> {
+  const everyMs = opts.everyMs ?? 500;
   return new Promise((resolve) => {
     let finished = false;
     const rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : null;
+    let auto: ReturnType<typeof setTimeout> | null = null;
     const finish = (how: "enter" | "poll") => {
       if (finished) return;
       finished = true;
       clearInterval(timer);
+      if (auto) clearTimeout(auto);
       rl?.close();
       if (how === "poll") process.stdout.write("\n");
       resolve(how);
@@ -159,6 +219,12 @@ export function waitEnterOr(prompt: string, poll: () => Promise<boolean>, everyM
     const timer = setInterval(() => {
       poll().then((ok) => ok && finish("poll"), () => {});
     }, everyMs);
+    if (opts.autoMs !== undefined) {
+      if (opts.autoMs > 0) auto = setTimeout(() => finish("enter"), opts.autoMs);
+      if (rl) rl.question(prompt, () => finish("enter"));
+      else process.stdout.write(`${prompt}\n`);
+      return;
+    }
     if (rl) rl.question(prompt, () => finish("enter"));
     else {
       process.stdout.write(`${prompt}\n`);

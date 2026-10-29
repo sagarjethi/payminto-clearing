@@ -32,6 +32,30 @@ NEXT_PUBLIC_NODE_URL=http://localhost:8787 pnpm --filter dashboard dev
 
 The local admin token is the public dev token `dev-admin-token` that the dashboard pre-fills for a local node.
 
+The optional MCP command it prints never contains a key: it reads the Trading Agent key from `PAYMINTO_TRADING_AGENT_KEY` (anvil dev account #3 on the local chain).
+
+### Recording a film (auto mode)
+
+`DEMO_STAGE_AUTO=1` advances every step on a timer, so the terminal can be filmed without touching the keyboard (Enter still skips ahead in a terminal).
+Before step 4 it holds the pre-settle state so the Netting "before" shot can be taken and Settle now clicked in the dashboard; if nobody clicks, it settles from the terminal after the delay.
+Settling from the dashboard or from the terminal plays out the same on the Netting screen.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `DEMO_STAGE_AUTO` | unset | `1` advances steps automatically |
+| `DEMO_STAGE_STEP_MS` | `4000` | Pause before each step in auto mode |
+| `DEMO_STAGE_SETTLE_DELAY_MS` | `20000` | Auto mode: how long step 4 waits for Settle now before settling from the terminal; `0` waits for the dashboard only |
+| `DEMO_STAGE_HOLD` | unset | `1` keeps the stack up after the last step without a terminal on stdin |
+
+```sh
+# terminal 1, repo root
+DEMO_STAGE_AUTO=1 DEMO_STAGE_STEP_MS=4000 DEMO_STAGE_SETTLE_DELAY_MS=45000 DEMO_STAGE_HOLD=1 DEMO_DASHBOARD_PORT=3010 pnpm demo:stage
+# terminal 2, apps/dashboard
+NEXT_PUBLIC_NODE_URL=http://localhost:8787 npx next dev -p 3010
+```
+
+In dev mode each screen compiles on its first visit; open every screen once (or `curl` it) before recording so no loading state is filmed.
+
 ## Cast
 
 | Who | Port | Price (local) | Role |

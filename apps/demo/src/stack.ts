@@ -1,5 +1,5 @@
 import { appendFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { erc20Abi, maxUint256, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { z } from "zod";
@@ -9,7 +9,7 @@ import { assertDisposableTarget, createLogger, loadConfig, startNode, type Clear
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { AgentWallet, createMcpServer } from "@payminto/mcp";
-import { DEMO_DIR, type DemoConfig } from "./config.ts";
+import { DEMO_DIR, REPO_ROOT, type DemoConfig } from "./config.ts";
 import { forgeDeployLocal, mintLocal, portIsFree, freePort, rpcFor, startAnvil, type AnvilProcess, type Rpc } from "./chain.ts";
 import { listen, marketDataApp, PriceSource, researchWriterApp, riskScanApp, rogueApp, type Listening, type Registered } from "./providers.ts";
 
@@ -143,7 +143,7 @@ export async function startStack(cfg: DemoConfig, opts: { say?: Say; runDir?: st
     if (!cfg.live) env.DEPLOYMENTS_DIR = deploymentsDir;
     const nodeConfig = loadConfig(env);
     const logger = createLogger({ level: "info", base: { service: "clearing-node" }, sink: (l) => appendFileSync(logFile, l + "\n") });
-    say(`starting Clearing Node on :${nodePort} (db ${dbPath})`);
+    say(`starting Clearing Node on :${nodePort} (db ${relative(REPO_ROOT, dbPath)})`);
     const node = await startNode(nodeConfig, { logger });
     cleanups.push(() => node.stop());
     const nodeUrl = `http://localhost:${nodePort}`;

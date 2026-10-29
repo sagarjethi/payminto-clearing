@@ -8,7 +8,7 @@ import { DemoConfigError, loadDemoConfig, REPO_ROOT, type DemoConfig } from "./c
 import { checkSummary } from "./checks.ts";
 import { collectSummary, proveCall, runTraffic, settle, type AttackResult, type SettleOutcome, type Summary, type TrafficResult } from "./scenario.ts";
 import { dashboardPort, startStack, type Stack } from "./stack.ts";
-import { banner, c, progressBar, renderSummary, section, short, usdc, waitEnter, waitEnterOr } from "./ui.ts";
+import { advance, banner, c, clip, kv, progressBar, renderSummary, section, short, stageAuto, stageSettleDelayMs, stageStepMs, stepHeader, usdc, waitEnter, waitEnterOr } from "./ui.ts";
 
 const mode = process.argv[2] === "stage" ? "stage" : "run";
 const out = (s = "") => process.stdout.write(s + "\n");
@@ -48,22 +48,24 @@ function printPlan(cfg: DemoConfig) {
 }
 
 function narrateAttack(a: AttackResult) {
-  out(`\n  ${c.red("!")} ${a.agent} ${c.dim(`(${a.via})`)}: ${a.name}`);
-  if (a.toolText) out(`    ${c.dim(`MCP tool error: ${a.toolText.slice(0, 150)}`)}`);
-  out(`    layer 1, agent SDK before signing:   ${a.agentRule ? c.red(c.bold(`REFUSED ${a.agentRule}`)) : c.red(c.bold("SIGNED"))}`);
+  out(`\n  ${c.red(c.bold("ATTACK"))}  ${c.bold(a.agent)} ${c.dim(`via ${a.via === "mcp" ? "MCP tools" : "SDK"}`)}: ${a.name}`);
+  if (a.toolText) out(`    ${c.dim(`tool reply to the model: "${clip(a.toolText, 110)}"`)}`);
+  const l1 = a.agentRule ? c.red(c.bold(`REFUSED  ${a.agentRule}`)) : c.red(c.bold("SIGNED"));
   const l2 = a.nodeRule
-    ? c.red(c.bold(`DENIED  ${a.nodeRule}`))
+    ? `${c.red(c.bold(`DENIED   ${a.nodeRule}`))}  ${c.dim(a.ruleText ?? "")}`
     : a.compromisedLocalRule
       ? c.yellow(c.bold(`NOT REACHED - the compromised client refused locally with ${a.compromisedLocalRule}`))
       : c.red(c.bold(`ACCEPTED - this should never happen (${a.message})`));
-  out(`    layer 2, clearing node (recorded):  ${l2}  ${a.ruleText ?? ""}`);
+  out(`    ${c.dim("layer 1  agent SDK, before signing ")}  ${l1}`);
+  out(`    ${c.dim("layer 2  clearing node, recorded   ")}  ${l2}`);
+  out(`    ${c.green("no money moved")}`);
 }
 
 function trafficProgress() {
   const tty = process.stdout.isTTY;
   let last = -1;
   return (p: { done: number; total: number; ok: number; failed: number }) => {
-    const line = `  ${progressBar(p.done, p.total)}  ${c.green(`${p.ok} paid`)}${p.failed ? c.red(`  ${p.failed} failed`) : ""}`;
+    const line = `  ${progressBar(p.done, p.total)} agent requests  ${c.green(`${p.ok} paid`)}${p.failed ? c.red(`  ${p.failed} failed`) : ""}`;
     if (tty) process.stdout.write(`\r${line}`);
     else if (Math.floor((p.done / p.total) * 10) !== last) {
       last = Math.floor((p.done / p.total) * 10);
@@ -103,6 +105,8 @@ function finish(summary: Summary, traffic: TrafficResult): number {
 const batchList = z.array(z.object({ id: z.string(), status: z.string(), calls: z.number() }).loose());
 const previewSchema = z.object({ calls: z.number(), claims: z.number(), transfers: z.number(), compression: z.number(), grossTotal: z.string(), netTotal: z.string(), gross: z.array(z.object({ from: z.string(), to: z.string(), amount: z.string(), calls: z.number() }).loose()), net: z.array(z.object({ from: z.string(), to: z.string(), amount: z.string() }).loose()) }).loose();
 
+const STEPS = 7;
+
 async function stageMode(cfg: DemoConfig) {
   const t0 = Date.now();
   out(section("Boot (before walking on stage)"));
@@ -116,31 +120,47 @@ async function stageMode(cfg: DemoConfig) {
     [st.addresses.risk.toLowerCase(), "Risk Scan"],
   ]);
   const who = (a: string) => names.get(a.toLowerCase()) ?? short(a);
+  const col = (s: string, n = 16) => s.padEnd(n);
   out(section("Dashboard"));
-  out(`  start it in another terminal:  ${c.bold(`NEXT_PUBLIC_NODE_URL=${st.nodeUrl} pnpm --filter dashboard dev`)}`);
-  out(`  open http://localhost:${dashboardPort()}, sign in with the local admin token, stay on Overview (all zero)`);
+  out(`  start it in another terminal:  ${c.bold(`NEXT_PUBLIC_NODE_URL=${st.nodeUrl} pnpm --filter dashboard dev${dashboardPort() !== 3000 ? ` -p ${dashboardPort()}` : ""}`)}`);
+  out(`  open ${c.bold(`http://localhost:${dashboardPort()}`)}, sign in with the local admin token, stay on Overview`);
   if (!cfg.live) {
-    // Local anvil dev key only; live keys are never printed.
+    // The agent key is never printed, not even the public anvil one: the command reads it from the environment.
     out(section("Optional: let Claude spend from the Trading Agent mandate"));
+    out(c.dim(`  export PAYMINTO_TRADING_AGENT_KEY=<the Trading Agent key: anvil dev account #3>`));
     out(
       c.dim(
-        `  claude mcp add payminto-trading -e NODE_URL=${st.nodeUrl} -e CHAIN_ID=31337 -e RPC_URL=${st.rpc.rpcUrl} -e HUB_ADDRESS=${st.hub} ` +
-          `-e AGENT_KEY=${cfg.keys.trading} -e MANDATE_ID=${st.mandates.trading} -e RECEIPT_STORE_PATH=${st.receiptStores.trading} ` +
+        `  claude mcp add payminto-trading -e NODE_URL=${st.nodeUrl} -e CHAIN_ID=${cfg.chainId} -e RPC_URL=${st.rpc.rpcUrl} -e HUB_ADDRESS=${st.hub} ` +
+          `-e AGENT_KEY="$PAYMINTO_TRADING_AGENT_KEY" -e MANDATE_ID=${st.mandates.trading} -e RECEIPT_STORE_PATH=${st.receiptStores.trading} ` +
           `-- node ${REPO_ROOT}/apps/mcp/src/main.ts`,
       ),
     );
   }
-  await waitEnter(c.cyan("\n  [Enter] step 1: the Treasury Agent mandate "));
+  if (stageAuto) {
+    const settle = stageSettleDelayMs > 0 ? `settles ${(stageSettleDelayMs / 1000).toFixed(0)} s after the netting preview unless Settle now is clicked first` : "waits for Settle now in the dashboard";
+    out(c.dim(`\n  auto mode: a step every ${(stageStepMs / 1000).toFixed(1)} s (DEMO_STAGE_STEP_MS); step 4 ${settle} (DEMO_STAGE_SETTLE_DELAY_MS)`));
+  }
+  await advance("step 1: the Treasury Agent mandate");
 
-  out(section("Step 1 - Mandate"));
+  out(stepHeader(1, STEPS, "Mandate", "an owner signs one EIP-712 mandate; the agent can only spend inside it"));
   const p = st.policies.treasury;
-  out(`  Treasury Agent ${st.addresses.treasury}`);
-  out(`  mandate ${st.mandates.treasury}`);
-  out(`  total cap ${c.bold(usdc(st.caps.treasury))}, per call ${c.bold(usdc(p.perCallCap))}, daily ${usdc(p.dailyCap)}, ${p.maxCallsPerMinute} calls/min`);
-  out(`  allowed payees: Market Data, Risk Scan, Research Writer; expires in 12 h; open tx ${st.mandateTx.treasury ?? "-"}`);
-  await waitEnter(c.cyan("\n  [Enter] step 2: run the agents "));
+  out(
+    kv([
+      ["agent", `${c.bold("Treasury Agent")}  ${c.dim(st.addresses.treasury)}`],
+      ["mandate", c.dim(st.mandates.treasury)],
+      ["total cap", c.bold(usdc(st.caps.treasury))],
+      ["per call", c.bold(usdc(p.perCallCap))],
+      ["daily cap", usdc(p.dailyCap)],
+      ["rate limit", `${p.maxCallsPerMinute.toLocaleString("en-US")} calls/min`],
+      ["allowed payees", "Market Data, Risk Scan, Research Writer"],
+      ["expires", "in 12 h"],
+      ["opened on chain", c.dim(st.mandateTx.treasury ?? "-")],
+    ]),
+  );
+  out(`\n  ${c.green("gasless")}  Research Writer signed an EIP-2612 permit; the node opened its mandate with openMandateWithPermit. ${c.bold("Agent sent 0 transactions.")}`);
+  await advance("step 2: run the agents");
 
-  out(section(`Step 2 - Agents buying (${cfg.calls} calls, paced)`));
+  out(stepHeader(2, STEPS, `Agents buying`, `${cfg.calls} paid calls, paced; each research brief buys 2 quotes and 1 scan on its own mandate`));
   const pending: AttackResult[] = [];
   const progress = trafficProgress();
   const traffic = await runTraffic(st, {
@@ -153,21 +173,29 @@ async function stageMode(cfg: DemoConfig) {
     },
   });
   out("");
-  await waitEnter(c.cyan("\n  [Enter] step 3: netting preview "));
+  out(`\n  ${c.green(c.bold(`${traffic.ok} agent requests paid`))}, ${c.red(c.bold(`${pending.length} attacks blocked`))}, ${c.bold("0 gas")} spent by any agent`);
+  await advance("step 3: netting preview");
 
-  out(section("Step 3 - Netting"));
+  out(stepHeader(3, STEPS, "Netting", "every accepted call is an obligation; only the net differences move on chain"));
   const pv = await st.admin.get("/v1/netting/preview", previewSchema);
-  out(`  ${pv.calls} calls, ${pv.claims} claims, gross ${usdc(pv.grossTotal)} across ${pv.gross.length} obligations`);
-  for (const g of pv.gross) out(`    ${c.dim("owes")} ${who(g.from).padEnd(16)} -> ${who(g.to).padEnd(16)} ${usdc(g.amount).padStart(14)}  ${c.dim(`${g.calls} calls`)}`);
-  out(`  nets to ${c.bold(String(pv.transfers))} transfers, ${usdc(pv.netTotal)}:`);
-  for (const n of pv.net) out(`    ${c.green("pays")} ${who(n.from).padEnd(16)} -> ${who(n.to).padEnd(16)} ${usdc(n.amount).padStart(14)}`);
-  out(`  compression ${c.bold(`${pv.compression.toFixed(1)} calls per transfer`)}`);
+  out(`  ${c.bold(String(pv.calls))} calls, ${pv.claims} claims, gross ${c.bold(usdc(pv.grossTotal))} across ${pv.gross.length} obligations`);
+  out(c.dim(`\n         ${col("payer")}    ${col("payee")} ${"amount".padStart(14)}  calls`));
+  for (const g of pv.gross) out(`    ${c.dim("owes")} ${col(who(g.from))} -> ${col(who(g.to))} ${usdc(g.amount).padStart(14)}  ${c.dim(String(g.calls).padStart(5))}`);
+  out(`\n  nets to ${c.bold(String(pv.transfers))} transfers, ${c.bold(usdc(pv.netTotal))}:`);
+  for (const n of pv.net) out(`    ${c.green("pays")} ${col(who(n.from))} -> ${col(who(n.to))} ${usdc(n.amount).padStart(14)}`);
+  out(`\n  ${c.bold(c.green(`${pv.compression.toFixed(1)} calls per on-chain transfer`))}`);
 
-  out(section("Step 4 - Settle"));
+  out(stepHeader(4, STEPS, "Settle", "one settleBatch transaction; debtors co-sign HSP payments; funds move wallet to wallet"));
   const confirmed = async () => (await st.admin.get("/v1/batches", batchList)).some((b) => b.status === "confirmed");
-  const how = await waitEnterOr(c.cyan("  click Settle now in the dashboard, or press [Enter] to settle from here "), confirmed);
+  const prompt = stageAuto
+    ? stageSettleDelayMs > 0
+      ? c.cyan(`  click Settle now in the dashboard; settling from here in ${(stageSettleDelayMs / 1000).toFixed(0)} s otherwise`)
+      : c.cyan("  waiting for Settle now in the dashboard")
+    : c.cyan("  click Settle now in the dashboard, or press [Enter] to settle from here ");
+  const how = await waitEnterOr(prompt, confirmed, stageAuto ? { autoMs: stageSettleDelayMs } : {});
   let s: SettleOutcome;
   if (how === "enter") {
+    say("settling from the terminal (POST /v1/settlements)");
     s = await settle(st);
     if (s.skipped) {
       say(`settlement already running (${s.skipped}); waiting for it`);
@@ -177,24 +205,51 @@ async function stageMode(cfg: DemoConfig) {
   const batches = (await st.admin.get("/v1/batches", batchList)).filter((b) => b.status === "confirmed");
   s = { batchIds: batches.map((b) => b.id as `0x${string}`), dropped: [], ms: 0 };
   const summary = await collectSummary(st, traffic, s, t0);
-  out(`  ${summary.calls} calls -> ${c.bold(String(summary.transfersOnchain))} on-chain transfers, compression ${c.bold(c.green(summary.compression.toFixed(1)))}`);
-  await waitEnter(c.cyan("\n  [Enter] step 5: batch detail and HSP "));
+  out(`  ${c.bold(String(summary.calls))} calls -> ${c.bold(c.green(String(summary.transfersOnchain)))} on-chain transfers, compression ${c.bold(c.green(summary.compression.toFixed(1)))}, gas saved ${c.bold(c.green(`${summary.gas.savedPct.toFixed(1)}%`))}`);
+  await advance("step 5: batch detail and HSP");
 
-  out(section("Step 5 - Batch and HSP"));
-  for (const b of summary.batches) out(`  batch ${short(b.id)} tx ${b.txHash}`);
-  for (const h of summary.hsp) out(`    #${h.index} ${who(h.from).padEnd(16)} -> ${who(h.to).padEnd(16)} ${usdc(h.amount).padStart(14)}  HSP ${h.status === "ACCEPT" ? c.green(h.status) : c.yellow(h.status)}`);
+  out(stepHeader(5, STEPS, "Batch and HSP", "each net transfer is an HSP payment the debtor co-signed; the verifier answers ACCEPT"));
+  for (const b of summary.batches)
+    out(
+      kv([
+        ["batch", short(b.id)],
+        ["tx", b.txHash ?? "-"],
+        ["status", b.status === "confirmed" ? c.green("confirmed at the finality head") : c.yellow(b.status)],
+        ["dashboard", c.cyan(`http://localhost:${dashboardPort()}/batches/${b.id}`)],
+      ]),
+    );
+  out("");
+  for (const h of summary.hsp) out(`    #${h.index + 1}  ${col(who(h.from))} -> ${col(who(h.to))} ${usdc(h.amount).padStart(14)}  HSP ${h.status === "ACCEPT" ? c.green(c.bold(h.status)) : c.yellow(h.status)}`);
+  if (stageAuto) await advance("step 6: prove one call on chain");
+
+  out(stepHeader(6, STEPS, "Receipt proof", "any single call is provable against the receipts root stored on chain"));
   for (;;) {
-    const answer = await waitEnter(c.cyan(`\n  step 6: judge picks a call number 1-${summary.calls} (type it, [Enter] for random, "q" to finish) `));
+    const answer = stageAuto ? "" : await waitEnter(c.cyan(`\n  judge picks a call number 1-${summary.calls} (type it, [Enter] for random, "q" to finish) `));
     if (answer.toLowerCase() === "q") break;
     const seq = answer ? Number(answer) : undefined;
     const pr = await proveCall(st, Number.isInteger(seq) ? seq : undefined);
     if (!pr) out(c.yellow("  that one lands in the next batch; pick another"));
-    else out(`  call #${pr.seq} ${pr.callId}\n  batch ${pr.batchId}, ${pr.proofLength}-step Merkle path, verifyReceipt on chain: ${pr.verifiedOnchain ? c.green(c.bold("true")) : c.red("false")}`);
-    if (!process.stdin.isTTY) break;
+    else
+      out(
+        kv([
+          ["call", `#${pr.seq}  ${c.dim(pr.callId)}`],
+          ["batch", c.dim(pr.batchId)],
+          ["Merkle path", `${pr.proofLength} steps`],
+          ["verifyReceipt", pr.verifiedOnchain ? c.green(c.bold("true, verified on chain")) : c.red(c.bold("false"))],
+          ["dashboard", c.cyan(`http://localhost:${dashboardPort()}/receipts/${pr.callId}`)],
+        ]),
+      );
+    if (stageAuto || !process.stdin.isTTY) break;
   }
+  if (stageAuto) await advance("step 7: the books");
 
-  out(section("Step 7 - Books"));
-  out(`  trial balance: ${summary.trialBalance.balanced ? c.green(`balanced, balance ${summary.trialBalance.balance}`) : c.red("UNBALANCED")}`);
+  out(stepHeader(7, STEPS, "Books", "double-entry ledger: every journal balances, the hub holds nothing"));
+  out(
+    kv([
+      ["trial balance", summary.trialBalance.balanced ? c.green(c.bold(`balanced, ${summary.trialBalance.balance} USDC`)) : c.red("UNBALANCED")],
+      ["hub token balance", summary.hubBalance === 0n ? c.green(c.bold("0 (non-custodial)")) : c.red(usdc(summary.hubBalance))],
+    ]),
+  );
   out(renderSummary(summary));
   const code = finish(summary, traffic);
   // Without a terminal (CI, scripted rehearsal) stage mode exits unless DEMO_STAGE_HOLD=1 keeps the stack up.
@@ -204,7 +259,12 @@ async function stageMode(cfg: DemoConfig) {
   return code;
 }
 
-out(banner("Payminto Clearing", mode === "stage" ? "stage mode - press Enter to advance each step" : "agent-to-agent clearing on HashKey Chain"));
+out(
+  banner(
+    "Payminto Clearing",
+    mode === "stage" ? (stageAuto ? "stage mode - steps advance automatically" : "stage mode - press Enter to advance each step") : "agent-to-agent clearing on HashKey Chain",
+  ),
+);
 let cfg: DemoConfig;
 try {
   cfg = loadDemoConfig(process.env);
