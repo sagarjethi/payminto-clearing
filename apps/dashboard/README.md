@@ -35,5 +35,5 @@ pnpm --filter dashboard build
 - `lib/netting.ts` the hub's netting algorithm, the two-column flow layout and the before-versus-after figures used on the Netting screen.
 - `lib/denials.ts` plain-language names for each policy rule and the per-rule summary on Blocked calls.
 - `lib/spend.ts` the mandate budget bar and validity countdown; `lib/proof.ts` the individual checks behind a receipt verdict.
-- `docs/screenshots/` reference captures; `live-anvil-*` were taken against a real node on anvil, `v2-*` after the Mobbin-informed redesign.
+- `docs/screenshots/` reference captures; `live-anvil-*` were taken against a real node on anvil, `v2-*` after the Mobbin-informed redesign, `v3-*` from a `pnpm demo:stage` film run at 1920x1080 (dark) and 1440x900 (light), with `v3-before-*` showing the same screens before the camera-ready pass.
 - `docs/DESIGN_REFERENCES.md` the Mobbin references behind each screen.
