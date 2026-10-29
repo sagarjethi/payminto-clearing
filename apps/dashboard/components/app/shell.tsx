@@ -173,8 +173,8 @@ function SidebarFooter() {
 }
 
 function LiveIndicator() {
-  const { status } = useLive();
-  const label = status === "live" ? "Live" : status === "connecting" ? "Reconnecting" : "Offline";
+  const { status, wasLive } = useLive();
+  const label = status === "live" ? "Live" : status === "connecting" ? (wasLive ? "Reconnecting" : "Connecting") : "Offline";
   const tone = status === "live" ? "text-positive" : status === "connecting" ? "text-warning" : "text-negative";
   return (
     <Tooltip>
@@ -188,7 +188,7 @@ function LiveIndicator() {
         </span>
       </TooltipTrigger>
       <TooltipContent>
-        {status === "live" ? "Receiving events from the clearing node" : status === "connecting" ? "Event stream dropped; retrying" : "No event stream. Screens refresh on demand."}
+        {status === "live" ? "Receiving events from the clearing node" : status === "connecting" ? (wasLive ? "Event stream dropped; retrying" : "Opening the event stream") : "No event stream. Screens refresh on demand."}
       </TooltipContent>
     </Tooltip>
   );

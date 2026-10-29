@@ -49,6 +49,12 @@ export function useMandate(id: string) {
   return useQuery({ queryKey: qk.mandate(id), queryFn: () => api.mandate(id), enabled: Boolean(id) });
 }
 
+/** The public provider catalog in one request: enough to name payee wallets without waiting for per-provider detail. */
+export function useProviderCatalog() {
+  const api = useApi();
+  return useQuery({ queryKey: [...qk.providers, "catalog"], queryFn: () => api.providerCatalog(), staleTime: 30_000 });
+}
+
 export function useProviders() {
   const api = useApi();
   return useQuery({ queryKey: qk.providers, queryFn: () => api.providers() });
@@ -150,7 +156,7 @@ export type Party = { name: string; kind: "agent" | "provider" | "owner" | "oper
 /** Names wallets the way an operator thinks about them: by provider name or mandate agent label. */
 export function useDirectory() {
   const mandates = useMandates();
-  const providers = useProviders();
+  const providers = useProviderCatalog();
   const info = useInfo();
   return useMemo(() => {
     const map = new Map<string, Party>();

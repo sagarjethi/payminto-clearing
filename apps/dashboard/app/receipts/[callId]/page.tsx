@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Check, CheckCircle2, CircleDashed, HelpCircle, X, XCircle } from "lucide-react";
 import type { Hex } from "viem";
-import { useMandates, useProof } from "@/lib/queries";
+import { useBatches, useMandates, useProof } from "@/lib/queries";
+import { useDocumentTitle } from "@/lib/use-title";
 import { formatDateTime, shortHash } from "@/lib/format";
 import { replayProof } from "@/lib/merkle-path";
 import { isVerified, proofChecks, type CheckState } from "@/lib/proof";
@@ -19,7 +20,9 @@ export default function ProofPage() {
   const { callId } = useParams<{ callId: string }>();
   const q = useProof(callId);
   const mandates = useMandates();
+  const batches = useBatches();
   const back = { href: "/receipts", label: "Receipt proof" };
+  useDocumentTitle(q.data ? `Receipt ${shortHash(callId)}` : null);
 
   if (!/^0x[0-9a-fA-F]{64}$/.test(callId)) {
     return (
@@ -51,6 +54,7 @@ export default function ProofPage() {
   }
   const p = q.data;
   const label = mandates.data?.find((m) => m.id === p.receipt.mandateId)?.label;
+  const batchSeq = batches.data?.find((b) => b.id === p.batchId)?.seq;
 
   return (
     <>
@@ -60,7 +64,7 @@ export default function ProofPage() {
         <Panel title="Receipt" description="Signed by the clearing node when it accepted the voucher">
           <Fields>
             <Field label="Amount"><Money atomic={p.receipt.amount} className="font-medium" /></Field>
-            <Field label="Cumulative"><Money atomic={p.receipt.cumulative} /></Field>
+            <Field label="Voucher total" hint="Running total the agent has signed to this payee, including this call"><Money atomic={p.receipt.cumulative} /></Field>
             <Field label="Payee"><Address address={p.receipt.payee} /></Field>
             <Field label="Mandate">
               <span className="flex flex-col gap-0.5">
@@ -73,7 +77,14 @@ export default function ProofPage() {
             <Field label="Leaf"><Hash value={p.leaf} /></Field>
             <Field label="Node"><Address address={p.receipt.node} /></Field>
             <Field label="Node signature"><Hash value={p.receipt.nodeSignature} /></Field>
-            {p.batchId && <Field label="Batch"><Hash value={p.batchId} href={`/batches/${p.batchId}`} /></Field>}
+            {p.batchId && (
+              <Field label="Batch">
+                <span className="flex flex-col gap-0.5">
+                  {batchSeq !== undefined && <span className="font-medium">Batch #{batchSeq}</span>}
+                  <Hash value={p.batchId} href={`/batches/${p.batchId}`} />
+                </span>
+              </Field>
+            )}
             {p.txHash && <Field label="Settlement tx"><Hash value={p.txHash} kind="tx" /></Field>}
           </Fields>
         </Panel>

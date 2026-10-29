@@ -52,7 +52,7 @@ export default function SettingsPage() {
               </Field>
               <Field label="Event stream">
                 <Chip tone={live.status === "live" ? "positive" : live.status === "connecting" ? "warning" : "negative"}>
-                  {live.status === "live" ? "Connected" : live.status === "connecting" ? "Reconnecting" : "Offline"}
+                  {live.status === "live" ? "Connected" : live.status === "connecting" ? (live.wasLive ? "Reconnecting" : "Connecting") : "Offline"}
                 </Chip>
               </Field>
               <Field label="Auto-settle">

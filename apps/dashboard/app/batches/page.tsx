@@ -1,9 +1,10 @@
 "use client";
 
+import { TimeAgo } from "@/components/app/time-ago";
 import Link from "next/link";
 import { Layers } from "lucide-react";
 import { useBatches } from "@/lib/queries";
-import { formatDateTime, formatInt, formatRatio, timeAgo } from "@/lib/format";
+import { formatDateTime, formatInt, formatRatio } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Hash, Money, PageHeader, Panel } from "@/components/app/primitives";
 import { BatchStatusChip } from "@/components/app/status";
@@ -48,7 +49,7 @@ export default function BatchesPage() {
                     <span className="num">{formatInt(b.calls)}</span> calls, <Money atomic={b.gross} maxFraction={4} /> gross, <Money atomic={b.net} maxFraction={4} /> moved
                   </p>
                   <p className="mt-0.5 text-xs text-subtle">
-                    <span className="num">{formatRatio(b.transfers ? b.calls / b.transfers : 0)}</span> calls per transfer, {timeAgo(b.confirmedAt ?? b.createdAt)}
+                    <span className="num">{formatRatio(b.transfers ? b.calls / b.transfers : 0)}</span> calls per transfer, <TimeAgo iso={b.confirmedAt ?? b.createdAt} />
                   </p>
                 </Link>
               </li>
@@ -87,7 +88,7 @@ export default function BatchesPage() {
                     <td className="num px-3 py-3 text-right font-medium">{formatRatio(b.transfers ? b.calls / b.transfers : 0)}</td>
                     <td className="px-3 py-3"><Hash value={b.txHash} kind="tx" /></td>
                     <td className="num px-5 py-3 text-right text-xs whitespace-nowrap text-muted-foreground" title={formatDateTime(b.confirmedAt ?? b.createdAt)}>
-                      {timeAgo(b.confirmedAt ?? b.createdAt)}
+                      <TimeAgo iso={b.confirmedAt ?? b.createdAt} />
                     </td>
                   </tr>
                 ))}

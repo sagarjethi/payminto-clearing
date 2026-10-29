@@ -1,10 +1,11 @@
 "use client";
 
+import { TimeAgo } from "@/components/app/time-ago";
 import { useMemo } from "react";
 import { ShieldBan, ShieldCheck } from "lucide-react";
 import { useDenials, useToken } from "@/lib/queries";
 import { ruleDescription, summarizeDenials, type RuleSummary } from "@/lib/denials";
-import { formatInt, timeAgo } from "@/lib/format";
+import { formatInt } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Money, PageHeader, Panel } from "@/components/app/primitives";
 import { Chip, RuleChip } from "@/components/app/status";
@@ -105,7 +106,7 @@ export default function DenialsPage() {
                       </Chip>
                     </td>
                     <td className="num px-3 py-3 text-right font-medium">{formatInt(r.count)}</td>
-                    <td className="num py-3 pr-4 pl-3 text-right text-xs whitespace-nowrap text-muted-foreground sm:pr-5">{timeAgo(r.last)}</td>
+                    <td className="num py-3 pr-4 pl-3 text-right text-xs whitespace-nowrap text-muted-foreground sm:pr-5"><TimeAgo iso={r.last} /></td>
                   </tr>
                 ))}
               </tbody>

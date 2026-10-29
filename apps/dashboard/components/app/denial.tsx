@@ -1,10 +1,11 @@
 "use client";
 
+import { TimeAgo } from "@/components/app/time-ago";
 import Link from "next/link";
 import { ShieldBan } from "lucide-react";
 import { useDirectory, useMandates } from "@/lib/queries";
 import { asSentence, ruleTitle } from "@/lib/denials";
-import { shortAddress, timeAgo } from "@/lib/format";
+import { shortAddress } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Denial } from "@/lib/schemas";
 import { Money } from "./primitives";
@@ -56,9 +57,7 @@ export function DenialItem({ denial, showMandate = true, className }: { denial: 
               {mandate.label}
             </Link>
           )}
-          <time className="num" dateTime={denial.createdAt}>
-            {timeAgo(denial.createdAt)}
-          </time>
+          <TimeAgo iso={denial.createdAt} className="num" />
         </div>
       </div>
     </li>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { budgetSplit, daysLeft, describeDaysLeft } from "@/lib/spend";
+import { budgetSplit, daysLeft, describeDaysLeft, describeTimeLeft } from "@/lib/spend";
 
 describe("budgetSplit", () => {
   it("splits the cap into settled, pending and remaining", () => {
@@ -39,5 +39,15 @@ describe("daysLeft", () => {
     expect(describeDaysLeft(1)).toBe("1 day left");
     expect(describeDaysLeft(0)).toBe("Expires today");
     expect(describeDaysLeft(-1)).toBe("Expired 1 day ago");
+  });
+});
+
+describe("describeTimeLeft", () => {
+  const now = Date.UTC(2026, 9, 29, 12, 0, 0);
+  it("is precise inside two days and whole days after that", () => {
+    expect(describeTimeLeft(now / 1000 + 45 * 60, now)).toBe("45 min left");
+    expect(describeTimeLeft(now / 1000 + 12 * 3600 - 30, now)).toBe("11 h left");
+    expect(describeTimeLeft(now / 1000 + 5 * 86_400, now)).toBe("5 days left");
+    expect(describeTimeLeft(now / 1000 - 10, now)).toBe("Expired 1 day ago");
   });
 });

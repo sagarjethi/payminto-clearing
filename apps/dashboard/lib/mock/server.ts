@@ -646,6 +646,10 @@ export class MockClearingApi implements ClearingApi {
     });
   }
 
+  providerCatalog(): Promise<Provider[]> {
+    return this.providers();
+  }
+
   async provider(id: string): Promise<Provider> {
     const all = await this.providers();
     const p = all.find((x) => x.id === id);

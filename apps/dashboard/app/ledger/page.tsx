@@ -150,6 +150,10 @@ export default function LedgerPage() {
             </EmptyState>
           ) : (
             <ul className="divide-y">
+              <li aria-hidden className="flex justify-end bg-muted/40 px-4 py-1.5 text-xs text-muted-foreground sm:px-5">
+                <span className="w-28 text-right">Debit</span>
+                <span className="w-28 text-right">Credit</span>
+              </li>
               {journals.map(([id, lines]) => (
                 <li key={id} className="px-4 py-3 sm:px-5">
                   <div className="flex items-baseline justify-between gap-3">

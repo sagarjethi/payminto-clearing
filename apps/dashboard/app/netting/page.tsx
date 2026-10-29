@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Check, CheckCircle2, CircleDashed, Loader2, Waypoints } from "lucide-react";
 import { toast } from "sonner";
 import { useApi } from "@/lib/session";
 import { useLive } from "@/lib/live";
-import { qk, useDirectory, useNettingPreview, useToken } from "@/lib/queries";
-import { formatInt } from "@/lib/format";
+import { qk, useBatches, useDirectory, useNettingPreview, useToken } from "@/lib/queries";
+import { formatInt, formatRatio } from "@/lib/format";
 import { beforeAfter, netPositions } from "@/lib/netting";
 import { cn } from "@/lib/utils";
 import type { BatchDetail, NettingPreview } from "@/lib/schemas";
@@ -85,6 +85,24 @@ export default function NettingPage() {
     }
   }, [result.data, qc]);
 
+  // A settlement started elsewhere (the demo terminal, an auto-settle timer) plays out here exactly like a click.
+  const [mountedAt] = useState(() => Date.now());
+  const handled = useRef(new Set<string>());
+  useEffect(() => {
+    if (phase !== "idle" || settle.isPending) return;
+    const started = live.events.find((e) => e.type === "batch.started" && !handled.current.has(e.id) && new Date(e.at).getTime() >= mountedAt - 1000);
+    if (!started) return;
+    handled.current.add(started.id);
+    const id = (started.data.batch as { id?: string } | undefined)?.id;
+    if (!id) return;
+    // The phase follows a settlement the node announced over SSE.
+    setStartedAt(Date.now() - 1000);
+    setSnapshot(preview.data ?? null);
+    setError(null);
+    setBatchId(id);
+    setPhase("settling");
+  }, [live.events, phase, settle.isPending, preview.data, mountedAt]);
+
   const stepIndex = useMemo(() => {
     if (phase === "done") return 4;
     if (phase !== "settling") return -1;
@@ -114,19 +132,7 @@ export default function NettingPage() {
       ) : preview.isError && phase === "idle" ? (
         <ErrorState error={preview.error} onRetry={() => void preview.refetch()} />
       ) : !shown || (shown.gross.length === 0 && phase === "idle") ? (
-        <Panel>
-          <EmptyState
-            icon={<Waypoints className="size-4" />}
-            title="Nothing to net yet"
-            action={
-              <Button asChild variant="outline">
-                <Link href="/batches">See settled batches</Link>
-              </Button>
-            }
-          >
-            Calls accepted since the last batch appear here as obligations. Run your agents against a provider, then come back to settle.
-          </EmptyState>
-        </Panel>
+        <NothingToNet />
       ) : (
         <>
           <NettingHero
@@ -347,5 +353,40 @@ function SettledResult({ batch }: { batch: BatchDetail }) {
         ))}
       </ul>
     </div>
+  );
+}
+
+/** Empty netting: says what the last batch did, so a just-settled node does not look like it lost its data. */
+function NothingToNet() {
+  const batches = useBatches();
+  const last = batches.data?.find((b) => b.status === "confirmed");
+  return (
+    <Panel>
+      <EmptyState
+        icon={last ? <CheckCircle2 className="size-4 text-positive" /> : <Waypoints className="size-4" />}
+        title={last ? "All caught up" : "Nothing to net yet"}
+        action={
+          last ? (
+            <Button asChild>
+              <Link href={`/batches/${last.id}`}>Open batch #{last.seq}</Link>
+            </Button>
+          ) : (
+            <Button asChild variant="outline">
+              <Link href="/batches">See settled batches</Link>
+            </Button>
+          )
+        }
+      >
+        {last ? (
+          <>
+            Batch #{last.seq} cleared <span className="num">{formatInt(last.calls)}</span> calls in{" "}
+            <span className="num">{last.transfers}</span> on-chain {last.transfers === 1 ? "transfer" : "transfers"} (
+            <span className="num">{formatRatio(last.transfers ? last.calls / last.transfers : 0)}</span> calls per transfer). New calls appear here as obligations.
+          </>
+        ) : (
+          "Calls accepted since the last batch appear here as obligations. Run your agents against a provider, then come back to settle."
+        )}
+      </EmptyState>
+    </Panel>
   );
 }

@@ -1,11 +1,11 @@
 "use client";
 
+import { TimeAgo } from "@/components/app/time-ago";
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Loader2, Search, ShieldCheck } from "lucide-react";
 import { flattenCallPages, useCallPages, useDirectory } from "@/lib/queries";
-import { timeAgo } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -86,7 +86,7 @@ export default function ReceiptsPage() {
                       {dir.lookup(c.agent)?.name ?? "Agent"} <span className="text-subtle">paid</span> {dir.lookup(c.payee)?.name ?? "payee"}
                     </span>
                     <Money atomic={c.amount} />
-                    <span className="num hidden w-16 text-right text-xs text-subtle sm:block">{timeAgo(c.createdAt)}</span>
+                    <span className="num hidden w-16 text-right text-xs text-subtle sm:block"><TimeAgo iso={c.createdAt} /></span>
                   </Link>
                 </li>
               ))}

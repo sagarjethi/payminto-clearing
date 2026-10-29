@@ -8,8 +8,9 @@ import { qk } from "./queries";
 
 export type LiveStatus = "connecting" | "live" | "offline";
 
-type LiveValue = { status: LiveStatus; events: NodeEvent[]; lastEventAt: number | null };
-const LiveContext = createContext<LiveValue>({ status: "connecting", events: [], lastEventAt: null });
+/** `wasLive` tells a first connection ("Connecting") apart from a dropped one ("Reconnecting"). */
+type LiveValue = { status: LiveStatus; events: NodeEvent[]; lastEventAt: number | null; wasLive: boolean };
+const LiveContext = createContext<LiveValue>({ status: "connecting", events: [], lastEventAt: null, wasLive: false });
 
 const KEEP = 60;
 
@@ -46,7 +47,7 @@ function parseEvent(type: EventType, raw: string): NodeEvent | null {
 export function LiveProvider({ children }: { children: ReactNode }) {
   const session = useSession();
   const qc = useQueryClient();
-  const [value, setValue] = useState<LiveValue>({ status: "connecting", events: [], lastEventAt: null });
+  const [value, setValue] = useState<LiveValue>({ status: "connecting", events: [], lastEventAt: null, wasLive: false });
   const pending = useRef(new Map<string, QueryKey>());
   const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -66,7 +67,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     };
 
     const onEvent = (e: NodeEvent) => {
-      setValue((v) => ({ status: "live", events: [e, ...v.events].slice(0, KEEP), lastEventAt: Date.now() }));
+      setValue((v) => ({ status: "live", events: [e, ...v.events].slice(0, KEEP), lastEventAt: Date.now(), wasLive: true }));
       schedule(INVALIDATES[e.type] ?? []);
     };
 
@@ -78,7 +79,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     const url = api.eventsUrl();
     if (!url || typeof EventSource === "undefined") return;
     const es = new EventSource(url);
-    es.onopen = () => setValue((v) => ({ ...v, status: "live" }));
+    es.onopen = () => setValue((v) => ({ ...v, status: "live", wasLive: true }));
     es.onerror = () => setValue((v) => ({ ...v, status: es.readyState === EventSource.CLOSED ? "offline" : "connecting" }));
     const handlers = EVENT_TYPES.map((type) => {
       const h = (m: MessageEvent<string>) => {

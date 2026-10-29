@@ -1,5 +1,6 @@
 "use client";
 
+import { TimeAgo } from "@/components/app/time-ago";
 import { useMemo, useState } from "react";
 import { createWalletClient, custom, encodeFunctionData, type Address as Addr, type Hex } from "viem";
 import { clearingHubAbi } from "@payminto/protocol";
@@ -7,13 +8,17 @@ import { hasInjectedWallet } from "@/lib/sign";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, CalendarClock, CalendarRange, Coins, Gauge, Loader2, PiggyBank, Radio, ShieldCheck, Store, Wallet, type LucideIcon } from "lucide-react";
+import { Ban, CalendarClock, CalendarRange, Coins, Fuel, Gauge, Loader2, PiggyBank, Radio, ShieldCheck, Store, Wallet, type LucideIcon } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
 import { useApi } from "@/lib/session";
 import { qk, flattenCallPages, useCallPages, useInfo, useMandate, useToken } from "@/lib/queries";
-import { formatDate, formatDateTime, formatInt, formatMoney, percentOf, timeAgo } from "@/lib/format";
-import { budgetSplit, daysLeft, describeDaysLeft } from "@/lib/spend";
+import { formatDate, formatDateTime, formatInt, formatMoney, percentOf } from "@/lib/format";
+import { budgetSplit, describeTimeLeft } from "@/lib/spend";
+import { useDocumentTitle } from "@/lib/use-title";
+import { useNow } from "@/components/app/time-ago";
+import { Chip } from "@/components/app/status";
+import { Tooltip as Hint, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ApiError } from "@/lib/api";
 import type { MandateDetail } from "@/lib/schemas";
@@ -40,6 +45,7 @@ export default function MandateDetailPage() {
   const { id } = useParams<{ id: string }>();
   const q = useMandate(id);
   const back = { href: "/mandates", label: "Mandates" };
+  useDocumentTitle(q.data?.label ?? null);
 
   if (q.isPending) {
     return (
@@ -99,7 +105,8 @@ export default function MandateDetailPage() {
 /** The budget at a glance: what is left, and a bar of settled, awaiting netting and remaining. */
 function Budget({ m }: { m: MandateDetail }) {
   const split = budgetSplit(m.spend.settled, m.spend.pending, m.mandate.totalCap);
-  const days = daysLeft(m.mandate.validUntil);
+  const now = useNow();
+  const expired = Number(m.mandate.validUntil) * 1000 <= now;
   return (
     <section aria-label="Budget" className="rounded-xl border bg-card p-5 sm:p-6">
       <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
@@ -114,7 +121,7 @@ function Budget({ m }: { m: MandateDetail }) {
           <span className="mx-2 text-subtle" aria-hidden>
             |
           </span>
-          <span className={cn(days < 0 && "text-negative")}>{describeDaysLeft(days)}</span>
+          <span className={cn(expired && "text-negative")}>{describeTimeLeft(m.mandate.validUntil, now)}</span>
         </p>
       </div>
       <div
@@ -175,7 +182,10 @@ function SpendControls({ m }: { m: MandateDetail }) {
   const totalPct = percentOf(used, m.mandate.totalCap);
   const dailyPct = percentOf(m.spend.today, m.policy.dailyCap);
   const tone = (p: number): "negative" | "warning" | "primary" => (p > 90 ? "negative" : p > 75 ? "warning" : "primary");
-  const days = daysLeft(m.mandate.validUntil);
+  const now = useNow();
+  const expired = Number(m.mandate.validUntil) * 1000 <= now;
+  const short = Number(m.mandate.validUntil) - Number(m.mandate.validAfter) < 2 * 86_400;
+  const when = (sec: string) => (short ? formatDateTime(new Date(Number(sec) * 1000).toISOString()) : formatDate(Number(sec)));
   return (
     <Panel
       title="Spend controls"
@@ -213,9 +223,28 @@ function SpendControls({ m }: { m: MandateDetail }) {
             </ul>
           )}
         </Control>
-        <Control icon={CalendarRange} title="Validity" value={<span className={cn(days < 0 && "text-negative")}>{describeDaysLeft(days)}</span>}>
-          {formatDate(Number(m.mandate.validAfter))} to {formatDate(Number(m.mandate.validUntil))}
+        <Control icon={CalendarRange} title="Validity" value={<span className={cn("num", expired && "text-negative")}>{describeTimeLeft(m.mandate.validUntil, now)}</span>}>
+          {when(m.mandate.validAfter)} to {when(m.mandate.validUntil)}
         </Control>
+        {m.onboarding && (
+          <Control
+            icon={Fuel}
+            title="Onboarding"
+            value={m.onboarding.gaslessPermit ? <Chip tone="positive">Gasless permit</Chip> : <span className="text-muted-foreground">Approve transaction</span>}
+          >
+            {m.onboarding.gaslessPermit ? (
+              <>
+                The agent signed an EIP-2612 permit and the node opened this mandate with openMandateWithPermit. Agent wallet transactions sent:{" "}
+                <span className="num font-medium text-foreground">{formatInt(m.onboarding.agentTransactions)}</span>.
+              </>
+            ) : (
+              <>
+                The agent approved the hub with its own transaction. Agent wallet transactions sent:{" "}
+                <span className="num font-medium text-foreground">{formatInt(m.onboarding.agentTransactions)}</span>.
+              </>
+            )}
+          </Control>
+        )}
       </ul>
       <p className="flex items-start gap-2 border-t px-4 py-3 text-xs text-muted-foreground sm:px-5">
         <ShieldCheck className="mt-px size-3.5 shrink-0 text-positive" aria-hidden />
@@ -296,7 +325,7 @@ function RevokedNotice({ m }: { m: MandateDetail }) {
   return (
     <div className="mb-5 flex flex-col gap-3 rounded-lg border bg-muted/60 px-4 py-3 text-sm sm:flex-row sm:items-center">
       <p className="flex-1 text-muted-foreground">
-        Revoked {m.revokedAt ? timeAgo(m.revokedAt) : ""}. This node refuses new vouchers. Vouchers already accepted stay settleable on chain for one hour after the revoke.
+        Revoked {m.revokedAt ? <TimeAgo iso={m.revokedAt} /> : ""}. This node refuses new vouchers. Vouchers already accepted stay settleable on chain for one hour after the revoke.
         {pendingOnChain && " The hub has not recorded the revoke yet; the owner or agent can send it."}
       </p>
       {pendingOnChain && hasInjectedWallet() && (
@@ -333,9 +362,28 @@ function OnChain({ m }: { m: MandateDetail }) {
 
 function SpendChart({ m }: { m: MandateDetail }) {
   const t = useToken();
+  // A mandate that only spent in the last half hour reads better by minute than as one jump on a 14-day axis.
+  const recent = useMemo(() => {
+    const daily = m.spendSeries ?? [];
+    const earlier = daily.slice(0, -1).some((p) => BigInt(p.amount) > 0n);
+    const r = m.spendRecent ?? [];
+    const sumRecent = r.reduce((a, p) => a + BigInt(p.amount), 0n);
+    const today = daily.length ? BigInt(daily[daily.length - 1]!.amount) : 0n;
+    return !earlier && r.length > 1 && sumRecent > 0n && sumRecent === today;
+  }, [m.spendSeries, m.spendRecent]);
   const data = useMemo(() => {
     const out: { t: string; label: string; value: number; raw: string }[] = [];
     let run = 0n;
+    if (recent) {
+      const r = m.spendRecent!;
+      const first = Math.max(0, r.findIndex((p) => BigInt(p.amount) > 0n) - 1);
+      for (const p of r.slice(first)) {
+        run += BigInt(p.amount);
+        const label = new Date(p.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+        out.push({ t: p.at, label, value: Number(run) / 10 ** t.decimals, raw: run.toString() });
+      }
+      return out;
+    }
     for (const p of m.spendSeries ?? []) {
       run += BigInt(p.amount);
       // Live nodes bucket by day (YYYY-MM-DD); the mock buckets by hour (full ISO time).
@@ -345,9 +393,10 @@ function SpendChart({ m }: { m: MandateDetail }) {
       out.push({ t: p.day, label, value: Number(run) / 10 ** t.decimals, raw: run.toString() });
     }
     return out;
-  }, [m.spendSeries, t.decimals]);
+  }, [m.spendSeries, m.spendRecent, recent, t.decimals]);
+  const unit = recent ? "by minute" : m.spendSeries?.[0] && /^\d{4}-\d{2}-\d{2}$/.test(m.spendSeries[0].day) ? "by day" : "by hour";
   return (
-    <Panel title="Cumulative spend" description={`${t.symbol}, ${m.spendSeries?.[0] && /^\d{4}-\d{2}-\d{2}$/.test(m.spendSeries[0].day) ? "by day" : "by hour"}`}>
+    <Panel title="Cumulative spend" description={`${t.symbol}, ${unit}`}>
       {data.length < 2 || data[data.length - 1]!.raw === "0" ? (
         <EmptyState className="py-8" title="Nothing spent yet">Spend appears here once the agent has paid for calls under this mandate.</EmptyState>
       ) : (
@@ -378,7 +427,7 @@ function SpendChart({ m }: { m: MandateDetail }) {
                   );
                 }}
               />
-              <Area type="monotone" dataKey="value" stroke={chartColor("line")} strokeWidth={2} fill="url(#spendFill)" isAnimationActive={false} />
+              <Area type="linear" dataKey="value" stroke={chartColor("line")} strokeWidth={2} fill="url(#spendFill)" isAnimationActive={false} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -405,7 +454,16 @@ function CallsTable({ m }: { m: MandateDetail }) {
               <tr className="border-b text-left text-xs text-muted-foreground">
                 <th className="px-5 py-2.5 font-normal">Payee</th>
                 <th className="px-3 py-2.5 text-right font-normal">Amount</th>
-                <th className="px-3 py-2.5 text-right font-normal">Cumulative</th>
+                <th className="px-3 py-2.5 text-right font-normal">
+                  <Hint>
+                    <TooltipTrigger asChild>
+                      <span tabIndex={0} className="cursor-help underline decoration-dotted underline-offset-2">Voucher total</span>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs">
+                      Running total this agent has signed to this payee. Each voucher replaces the previous one, so the hub settles only the latest.
+                    </TooltipContent>
+                  </Hint>
+                </th>
                 <th className="px-3 py-2.5 font-normal">Status</th>
                 <th className="px-5 py-2.5 text-right font-normal">When</th>
               </tr>
@@ -419,7 +477,7 @@ function CallsTable({ m }: { m: MandateDetail }) {
                   </td>
                   <td className="px-3 py-2.5 text-right text-muted-foreground"><Money atomic={c.cumulative} maxFraction={4} /></td>
                   <td className="px-3 py-2.5"><CallStatusChip status={c.status} /></td>
-                  <td className="num px-5 py-2.5 text-right text-xs whitespace-nowrap text-muted-foreground">{timeAgo(c.createdAt)}</td>
+                  <td className="num px-5 py-2.5 text-right text-xs whitespace-nowrap text-muted-foreground"><TimeAgo iso={c.createdAt} /></td>
                 </tr>
               ))}
             </tbody>

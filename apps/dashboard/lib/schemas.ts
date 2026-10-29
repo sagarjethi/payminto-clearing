@@ -57,6 +57,8 @@ export const infoSchema = z.object({
   operatorGasBalance: atomicSchema.optional(),
   settleIntervalSec: z.number().optional(),
   publicUrl: z.string().optional(),
+  /** confirmTag: the head a batch must reach to count as final ("safe" on HashKey Chain, "latest" on a local chain). */
+  settlement: z.object({ confirmTag: z.string().optional() }).passthrough().optional(),
 });
 export type Info = z.infer<typeof infoSchema>;
 
@@ -146,6 +148,10 @@ export const mandateDetailSchema = mandateSchema.extend({
     .optional(),
   /** Daily spend buckets for the chart; optional because the SPEC does not pin it. */
   spendSeries: z.array(z.object({ day: z.string(), amount: atomicSchema })).optional(),
+  /** Per-minute spend for the last 30 minutes, so a fresh mandate shows a real curve. */
+  spendRecent: z.array(z.object({ at: z.string(), amount: atomicSchema, calls: z.number().optional() })).optional(),
+  /** Read from chain: opened from an EIP-2612 permit (no agent gas) and the agent wallet's transaction count. */
+  onboarding: z.object({ gaslessPermit: z.boolean(), agentTransactions: z.number(), agentNativeBalance: atomicSchema.optional() }).nullable().optional(),
 });
 export type MandateDetail = z.infer<typeof mandateDetailSchema>;
 
@@ -220,6 +226,8 @@ export const batchSchema = z.object({
   l1Fee: atomicSchema.nullable().optional(),
   error: z.string().nullable().optional(),
   createdAt: timeSchema,
+  submittedAt: timeSchema.nullable().optional(),
+  blockNumber: z.number().nullable().optional(),
   includedAt: timeSchema.nullable().optional(),
   confirmedAt: timeSchema.nullable().optional(),
   attestation: z.object({ uid: bytes32Schema, txHash: hex.nullable(), explorerUrl: z.string().nullable() }).nullable().optional(),

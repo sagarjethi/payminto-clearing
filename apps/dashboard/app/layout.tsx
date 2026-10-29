@@ -7,7 +7,7 @@ const sans = IBM_Plex_Sans({ subsets: ["latin"], weight: ["400", "500", "600", "
 const mono = IBM_Plex_Mono({ subsets: ["latin"], weight: ["400", "500"], variable: "--font-plex-mono", display: "swap" });
 
 export const metadata: Metadata = {
-  title: { default: "Payminto Clearing", template: "%s - Payminto Clearing" },
+  title: { default: "Overview - Payminto Clearing", template: "%s - Payminto Clearing" },
   description: "Agent payments, cleared on HashKey Chain.",
 };
 

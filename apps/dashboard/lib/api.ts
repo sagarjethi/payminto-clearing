@@ -90,6 +90,8 @@ export interface ClearingApi {
   createMandate(body: CreateMandateBody): Promise<MandateRecord>;
   revokeMandate(id: string): Promise<RevokeResult>;
   providers(): Promise<Provider[]>;
+  /** The catalog alone (no per-provider revenue): one request, used to name wallets. */
+  providerCatalog(): Promise<Provider[]>;
   provider(id: string): Promise<Provider>;
   createProvider(body: CreateProviderBody): Promise<{ id: string; apiKey: string }>;
   calls(q?: CallsQuery): Promise<Page<Call>>;
@@ -204,6 +206,10 @@ export class HttpClearingApi implements ClearingApi {
   revokeMandate(id: string) {
     return this.request(`/v1/mandates/${id}/revoke`, revokeResultSchema, { method: "POST", body: "{}" });
   }
+  providerCatalog() {
+    return this.request("/v1/providers", listOf(providerSchema, "providers"));
+  }
+
   async providers() {
     const list = await this.request("/v1/providers", listOf(providerSchema, "providers"));
     // The public catalog has no revenue; the admin detail route does. A node clears a handful of providers, so fan out.

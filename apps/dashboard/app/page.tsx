@@ -1,14 +1,16 @@
 "use client";
 
+import { TimeAgo, useNow } from "@/components/app/time-ago";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, FileSignature, Layers, Radio, ShieldBan, ShieldCheck, Waypoints } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useBatches, useCalls, useDenials, useDirectory, useMandates, useNettingPreview, useOverview, useProviders, useToken } from "@/lib/queries";
-import { formatGas, formatInt, formatMoney, formatRatio, timeAgo } from "@/lib/format";
+import { formatGas, formatInt, formatMoney, formatRatio } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Batch, Call, Denial } from "@/lib/schemas";
 import { axisTick, chartColor } from "@/lib/chart-theme";
+import { bucketCalls } from "@/lib/calls-chart";
 import { Button } from "@/components/ui/button";
 import { Money, PageHeader, Panel } from "@/components/app/primitives";
 import { BatchStatusChip, RuleChip } from "@/components/app/status";
@@ -32,7 +34,9 @@ export default function OverviewPage() {
     );
   }
 
-  const firstRun = overview.data && overview.data.calls.all === 0 && overview.data.batches === 0;
+  // The guide is for an empty node. A node with mandates already open shows the live dashboard at zero, so the first
+  // calls fill it in place instead of swapping the whole page.
+  const firstRun = overview.data && overview.data.calls.all === 0 && overview.data.batches === 0 && mandates.data !== undefined && mandates.data.length === 0;
 
   return (
     <>
@@ -49,7 +53,7 @@ export default function OverviewPage() {
           )
         }
       />
-      {overview.isPending ? (
+      {overview.isPending || (overview.data?.calls.all === 0 && mandates.isPending) ? (
         <Skeleton className="h-[5.75rem] w-full rounded-xl" />
       ) : firstRun ? (
         <FirstRun hasMandates={(mandates.data?.length ?? 0) > 0} hasProviders={(providers.data?.length ?? 0) > 0} />
@@ -75,18 +79,23 @@ export default function OverviewPage() {
 
 function Kpis() {
   const { data } = useOverview();
+  const preview = useNettingPreview();
   if (!data) return null;
+  // Before the first batch the measured figures are zero; show what the pending calls will net to instead.
+  const projected = data.batches === 0 && (preview.data?.calls ?? 0) > 0 ? preview.data!.compression : null;
   return (
     <StatStrip
       stats={[
         { label: "Settled volume", value: <Money atomic={data.volume.settled} maxFraction={2} />, note: <>Pending <Money atomic={data.volume.pending} maxFraction={4} /></> },
         { label: "Calls, last 24h", value: <span className="num">{formatInt(data.calls.last24h)}</span>, note: `${formatInt(data.calls.all)} all time` },
-        {
-          label: "Compression",
-          value: <span className="num">{formatRatio(data.compressionRatio)}</span>,
-          note: "calls per on-chain transfer",
-        },
-        { label: "Gas saved", value: <span className="num">{formatGas(data.gasSaved.gas)}</span>, note: "vs one transfer per call" },
+        projected !== null
+          ? { label: "Compression", value: <span className="num">{formatRatio(projected)}</span>, note: "projected calls per transfer" }
+          : data.batches === 0
+            ? { label: "Compression", value: <span className="text-muted-foreground">-</span>, note: "calls per on-chain transfer" }
+            : { label: "Compression", value: <span className="num">{formatRatio(data.compressionRatio)}</span>, note: "calls per on-chain transfer" },
+        data.batches === 0
+          ? { label: "Gas saved", value: <span className="text-muted-foreground">-</span>, note: "measured at settlement" }
+          : { label: "Gas saved", value: <span className="num">{formatGas(data.gasSaved.gas)}</span>, note: "vs one transfer per call" },
         {
           label: "Blocked, last 24h",
           value: <span className={cn("num", data.denials24h > 0 && "text-negative")}>{formatInt(data.denials24h)}</span>,
@@ -157,32 +166,18 @@ function FirstRun({ hasMandates, hasProviders }: { hasMandates: boolean; hasProv
 function CallsChart() {
   const calls = useCalls({ limit: 500 });
   const token = useToken();
-  const data = useMemo(() => {
-    const now = new Date();
-    now.setMinutes(0, 0, 0);
-    const hours = Array.from({ length: 12 }, (_, i) => {
-      const d = new Date(now.getTime() - (11 - i) * 3_600_000);
-      return { t: d.getTime(), label: d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }), calls: 0, volume: 0n };
-    });
-    for (const c of calls.data?.items ?? []) {
-      const t = new Date(c.createdAt).getTime();
-      const idx = hours.findIndex((h) => t >= h.t && t < h.t + 3_600_000);
-      if (idx >= 0) {
-        hours[idx]!.calls += 1;
-        hours[idx]!.volume += BigInt(c.amount);
-      }
-    }
-    return hours.map((h) => ({ ...h, volume: h.volume.toString() }));
-  }, [calls.data]);
+  // Re-bucket every 5 s so the window keeps up with the clock without re-rendering the chart every second.
+  const tick = Math.floor(useNow() / 5000);
+  const { bars: data, unit, hourly } = useMemo(() => bucketCalls(calls.data?.items ?? [], (tick + 1) * 5000), [calls.data, tick]);
 
   return (
-    <Panel title="Cleared calls per hour" description="Last 12 hours, accepted vouchers">
+    <Panel title="Cleared calls" description={hourly ? "Accepted vouchers per hour, last 12 hours" : `Accepted vouchers per ${unit}`}>
       {calls.isPending ? (
         <BlockSkeleton className="h-48" />
       ) : calls.isError ? (
         <ErrorState error={calls.error} onRetry={() => void calls.refetch()} />
       ) : (
-        <div className="h-48 w-full" role="img" aria-label={`Calls per hour over the last 12 hours, peak ${Math.max(...data.map((d) => d.calls))}`}>
+        <div className="h-48 w-full" role="img" aria-label={`Calls per ${unit}, peak ${Math.max(...data.map((d) => d.calls))}`}>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: -18 }} barCategoryGap={3}>
               <CartesianGrid vertical={false} stroke={chartColor("grid")} />
@@ -264,9 +259,7 @@ function LiveStream() {
                 <Link href={`/receipts/${r.call.id}`} className="shrink-0 rounded hover:underline" aria-label="Open receipt proof">
                   <Money atomic={r.call.amount} />
                 </Link>
-                <time className="num w-16 shrink-0 text-right text-xs text-subtle max-sm:hidden" dateTime={r.at}>
-                  {timeAgo(r.at)}
-                </time>
+                <TimeAgo iso={r.at} className="num w-16 shrink-0 text-right text-xs text-subtle max-sm:hidden" />
               </li>
             ) : (
               <li key={r.denial.id} className={cn(fresh.has(r.denial.id) && "row-in", "flex items-center gap-3 bg-negative-soft/60 px-4 py-2.5 text-sm sm:px-5")}>
@@ -279,9 +272,7 @@ function LiveStream() {
                   <span className="font-medium">{name(r.denial.payee)}</span>
                 </span>
                 <RuleChip rule={r.denial.rule} />
-                <time className="num w-16 shrink-0 text-right text-xs text-subtle max-sm:hidden" dateTime={r.at}>
-                  {timeAgo(r.at)}
-                </time>
+                <TimeAgo iso={r.at} className="num w-16 shrink-0 text-right text-xs text-subtle max-sm:hidden" />
               </li>
             ),
           )}
@@ -376,9 +367,7 @@ function BlockedCard() {
             </p>
             <div className="mt-2 flex items-center justify-between gap-3">
               <NoMoneyMoved />
-              <time className="num text-xs text-subtle" dateTime={latest.createdAt}>
-                {timeAgo(latest.createdAt)}
-              </time>
+              <TimeAgo iso={latest.createdAt} className="num text-xs text-subtle" />
             </div>
           </div>
           <Button asChild variant="outline" className="mt-3 w-full">
@@ -445,7 +434,7 @@ function TimelineItem({ batch, last }: { batch: Batch; last: boolean }) {
           <span className="num">{formatInt(batch.calls)}</span> calls, <Money atomic={batch.gross} maxFraction={4} /> gross, {batch.transfers} transfers
         </p>
         <p className="mt-0.5 text-xs text-subtle">
-          <span className="num">{formatRatio(ratio)}</span> calls per transfer, {timeAgo(batch.confirmedAt ?? batch.createdAt)}
+          <span className="num">{formatRatio(ratio)}</span> calls per transfer, <TimeAgo iso={batch.confirmedAt ?? batch.createdAt} />
         </p>
       </Link>
     </li>
