@@ -212,7 +212,9 @@ Mandate = { id, label, status: "pending" | "open" | "revoked" | "expired", manda
 MandateDetail = Mandate & { ownerSignature, revokedBy, revokeTxHash, openTxExplorerUrl,
             onchain: { open: false } | { open: true, spent, totalCap, revokedAt: number | null, validUntil: number } | null,
             positions: [{ payee, cumulative, settled, pending }], recentCalls: Call[], denials: Denial[],
-            spendSeries: [{ day: "YYYY-MM-DD", amount, calls }] }          // last 14 UTC days
+            spendSeries: [{ day: "YYYY-MM-DD", amount, calls }],           // last 14 UTC days
+            spendRecent: [{ at: ISO minute, amount, calls }],              // last 30 minutes
+            onboarding: { gaslessPermit: boolean, agentTransactions: number, agentNativeBalance } | null }  // read from chain
 Provider = { id, name, description, payee, priceAtomic, resource, category, calls24h }
 ProviderDetail = Provider & { createdAt, callsTotal, denials: number, revenue: { settled, pending }, recentCalls: Call[] }
 ProviderCreated = Provider & { createdAt, apiKey }                           // apiKey shown once

@@ -431,6 +431,23 @@ export class Store {
     });
   }
 
+  /** Accepted spend per minute for the last `minutes` minutes, oldest first, so a live demo shows its curve. */
+  spendRecent(mandateId: string, nowSec: number, minutes = 30): Array<{ at: string; amount: string; calls: number }> {
+    const end = Math.floor(nowSec / 60) * 60;
+    const from = end - (minutes - 1) * 60;
+    const rows = this.db.all<{ m: number; amount: string; calls: number }>(
+      "SELECT (timestamp / 60) * 60 AS m, bigsum(amount) AS amount, COUNT(*) AS calls FROM calls WHERE mandate_id = ? AND timestamp >= ? GROUP BY m",
+      mandateId.toLowerCase(),
+      from,
+    );
+    const byMinute = new Map(rows.map((r) => [r.m, r]));
+    return Array.from({ length: minutes }, (_, i) => {
+      const t = from + i * 60;
+      const r = byMinute.get(t);
+      return { at: new Date(t * 1000).toISOString(), amount: r?.amount ?? "0", calls: r?.calls ?? 0 };
+    });
+  }
+
   // providers
   provider(id: string): ProviderRow | undefined {
     return this.db.get<ProviderRow>("SELECT * FROM providers WHERE id = ?", id);

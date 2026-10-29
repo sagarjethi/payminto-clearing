@@ -505,7 +505,10 @@ export function createApi(s: NodeServices): Hono<Vars> {
     const id = param(c.req.param("id"), zBytes32, "id");
     const m = store.mandate(id);
     if (!m) throw new ApiError(404, "NOT_FOUND", "mandate not found");
-    const onchain = await chain.mandate(m.id).catch(() => undefined);
+    const [onchain, onboarding] = await Promise.all([
+      chain.mandate(m.id).catch(() => undefined),
+      m.open_tx_hash ? chain.onboarding(m.open_tx_hash as Hex, m.agent as Address).catch(() => null) : Promise.resolve(null),
+    ]);
     const positions = s.db
       .all<{ payee: Address; cumulative: string; settled: string }>(
         "SELECT payee, cumulative, settled FROM positions WHERE mandate_id = ? ORDER BY payee",
@@ -534,6 +537,8 @@ export function createApi(s: NodeServices): Hono<Vars> {
       recentCalls: store.listCalls({ mandateId: m.id, limit: 50 }).items,
       denials: store.listDenials({ mandateId: m.id, limit: 50 }),
       spendSeries: store.spendSeries(m.id, nowSec()),
+      spendRecent: store.spendRecent(m.id, nowSec()),
+      onboarding,
     });
   });
 

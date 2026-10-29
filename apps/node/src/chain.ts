@@ -8,6 +8,7 @@ import {
   fallback,
   getAddress,
   http,
+  toFunctionSelector,
   HttpRequestError,
   keccak256,
   LimitExceededRpcError,
@@ -27,6 +28,10 @@ import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { estimateL1Fee } from "viem/op-stack";
 import { clearingHubAbi, fiatTokenBlacklistAbi, hashkeyContracts, networkFor } from "@payminto/protocol";
 import { DEFAULT_TX_POLICY, type ConfirmTag, type TxPolicy } from "./config.ts";
+
+const OPEN_WITH_PERMIT_SELECTOR = toFunctionSelector(
+  clearingHubAbi.find((f) => f.type === "function" && f.name === "openMandateWithPermit") as Parameters<typeof toFunctionSelector>[0],
+).toLowerCase();
 
 /** One operator transaction broadcast: the original or a same-nonce replacement. */
 export type SentTx = { hash: Hex; raw: Hex; nonce: number; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint; replacement: number };
@@ -175,6 +180,7 @@ export class ChainClient {
   #gpoPresent: Promise<boolean> | null = null;
   #multicall: Promise<Address | null> | null = null;
   readonly #blacklistSupport = new Map<string, boolean>();
+  readonly #permitOpened = new Map<string, boolean>();
 
   constructor(opts: {
     chainId: number;
@@ -229,6 +235,21 @@ export class ChainClient {
       this.public.readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [address, this.hub] }),
     ]);
     return { balance, allowance };
+  }
+
+  /**
+   * How a mandate was onboarded, read from chain: whether its open transaction called openMandateWithPermit (the agent
+   * signed an EIP-2612 permit and paid no gas) and how many transactions the agent wallet has ever sent (its nonce).
+   */
+  async onboarding(openTxHash: Hex, agent: Address): Promise<{ gaslessPermit: boolean; agentTransactions: number; agentNativeBalance: string }> {
+    let gasless = this.#permitOpened.get(openTxHash);
+    if (gasless === undefined) {
+      const tx = await this.public.getTransaction({ hash: openTxHash });
+      gasless = tx.input.slice(0, 10).toLowerCase() === OPEN_WITH_PERMIT_SELECTOR;
+      this.#permitOpened.set(openTxHash, gasless);
+    }
+    const [agentTransactions, native] = await Promise.all([this.public.getTransactionCount({ address: agent }), this.public.getBalance({ address: agent })]);
+    return { gaslessPermit: gasless, agentTransactions, agentNativeBalance: native.toString() };
   }
 
   async mandate(id: Hex): Promise<OnchainMandate | null> {
